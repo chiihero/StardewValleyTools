@@ -227,16 +227,17 @@ class ModManagerApp:
         top = ttk.LabelFrame(tab, text="Mod 库")
         top.pack(fill=X)
 
+        # 顶部信息条：总数说明靠左，重新扫描按钮靠右，便于宽窄窗口都保持一致。
         row = ttk.Frame(top)
         row.pack(fill=X, padx=8, pady=(8, 4))
+        ttk.Label(row, textvariable=self._library_summary_var, foreground="#655748").pack(side=LEFT, fill=X, expand=True)
         self._scan_button = ttk.Button(row, text="重新扫描", command=self._scan_library_action)
-        self._scan_button.pack(side=LEFT)
+        self._scan_button.pack(side=RIGHT)
 
         search_row = ttk.Frame(top)
         search_row.pack(fill=X, padx=8, pady=(0, 8))
         ttk.Label(search_row, text="搜索").pack(side=LEFT)
         ttk.Entry(search_row, textvariable=self._search_var).pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
-        ttk.Label(top, textvariable=self._library_summary_var, foreground="#655748").pack(anchor="w", padx=8, pady=(0, 8))
 
         body = ttk.PanedWindow(tab, orient="horizontal")
         body.pack(fill=BOTH, expand=True, pady=(12, 0))
@@ -312,27 +313,34 @@ class ModManagerApp:
         # 把底部批量操作和提示放进列表卡片里，避免在窗口高度不足时被挤出可视区域。
         action_row = ttk.Frame(list_box)
         action_row.pack(fill=X, padx=8, pady=(10, 0))
-        ttk.Label(action_row, textvariable=self._selected_count_var, foreground="#655748").pack(side=LEFT, padx=(0, 8))
+        self._mod_action_row = action_row
+        self._mod_action_count_label = ttk.Label(action_row, textvariable=self._selected_count_var, foreground="#655748")
+        self._mod_action_count_label.grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+
+        self._mod_action_buttons: list[ttk.Button] = []
         self._enable_button = ttk.Button(action_row, text="启用勾选", command=lambda: self._set_selected_enabled(True))
-        self._enable_button.pack(side=LEFT)
+        self._mod_action_buttons.append(self._enable_button)
         self._disable_button = ttk.Button(action_row, text="停用勾选", command=lambda: self._set_selected_enabled(False))
-        self._disable_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._disable_button)
         self._select_all_button = ttk.Button(action_row, text="全选勾选", command=self._select_all_mods)
-        self._select_all_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._select_all_button)
         self._clear_selection_button = ttk.Button(action_row, text="清空勾选", command=self._clear_selection)
-        self._clear_selection_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._clear_selection_button)
         self._invert_selection_button = ttk.Button(action_row, text="反选勾选", command=self._invert_selection)
-        self._invert_selection_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._invert_selection_button)
         self._check_translation_button = ttk.Button(action_row, text="检查汉化情况", command=self._check_translation_action)
-        self._check_translation_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._check_translation_button)
         self._check_nexus_updates_button = ttk.Button(action_row, text="检查 Nexus 更新", command=self._check_nexus_updates_action)
-        self._check_nexus_updates_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._check_nexus_updates_button)
         self._download_nexus_updates_button = ttk.Button(action_row, text="下载并安装更新", command=self._download_nexus_updates_action)
-        self._download_nexus_updates_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._download_nexus_updates_button)
         self._translate_button = ttk.Button(action_row, text="汉化", command=self._translate_enabled_action)
-        self._translate_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._translate_button)
         self._import_enabled_button = ttk.Button(action_row, text="导入启用项", command=self._import_enabled_action)
-        self._import_enabled_button.pack(side=LEFT, padx=(8, 0))
+        self._mod_action_buttons.append(self._import_enabled_button)
+
+        action_row.bind("<Configure>", self._relayout_management_action_row)
+        self._relayout_management_action_row()
 
         ttk.Label(
             list_box,
@@ -429,6 +437,60 @@ class ModManagerApp:
         self._progress_bar.pack(side=LEFT, fill=X, expand=True)
         ttk.Label(panel, textvariable=self._progress_var, width=8, anchor="e").pack(side=LEFT, padx=(8, 0))
         ttk.Label(panel, textvariable=self._summary_var, foreground="#655748").pack(side=LEFT, padx=(12, 0))
+
+    def _relayout_management_action_row(self, event: object | None = None) -> None:
+        """根据当前宽度重排左侧批量操作按钮，窄宽度时自动换行。"""
+        action_row = getattr(self, "_mod_action_row", None)
+        count_label = getattr(self, "_mod_action_count_label", None)
+        buttons = getattr(self, "_mod_action_buttons", None)
+        if action_row is None or count_label is None or not buttons:
+            return
+
+        action_row.update_idletasks()
+        available_width = getattr(event, "width", 0) or action_row.winfo_width()
+        if available_width <= 1:
+            return
+
+        button_padding = 8
+        label_width = count_label.winfo_reqwidth()
+        button_widths = [button.winfo_reqwidth() for button in buttons]
+        total_width = label_width + button_padding
+        total_width += sum(button_widths)
+        total_width += button_padding * max(0, len(buttons) - 1)
+
+        for widget in [count_label, *buttons]:
+            widget.grid_forget()
+
+        # 宽屏时保持单行，窄屏时按可用宽度自动换行。
+        if available_width >= total_width + 16:
+            count_label.grid(row=0, column=0, sticky="w", padx=(0, button_padding), pady=(0, 6))
+            for index, button in enumerate(buttons, start=1):
+                button.grid(row=0, column=index, sticky="w", padx=(0 if index == 1 else button_padding, 0), pady=(0, 6))
+            return
+
+        count_label.grid(row=0, column=0, columnspan=1, sticky="w", pady=(0, 6))
+        line_width = max(available_width - 16, 240)
+        current_row = 1
+        current_column = 0
+        current_width = 0
+
+        for button, button_width in zip(buttons, button_widths):
+            extra_width = button_width if current_column == 0 else button_padding + button_width
+            if current_column > 0 and current_width + extra_width > line_width:
+                current_row += 1
+                current_width = 0
+                current_column = 0
+                extra_width = button_width
+
+            button.grid(
+                row=current_row,
+                column=current_column,
+                sticky="w",
+                padx=(0 if current_column == 0 else button_padding, 0),
+                pady=(0, 6),
+            )
+            current_width += extra_width
+            current_column += 1
 
     def _add_path_row(self, parent: ttk.Widget, label: str, var: StringVar, title: str) -> None:
         """添加一个路径输入行和浏览按钮。"""
