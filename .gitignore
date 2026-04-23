@@ -182,3 +182,4 @@ cython_debug/
 /mod参考
 /.stardewvalleytools
 /.stardewvalleytools
+.stardewvalleytools/state.json
