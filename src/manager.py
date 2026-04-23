@@ -10,6 +10,7 @@ from .scanner import scan_mod
 
 
 def discover_mod_roots(library_root: Path) -> list[Path]:
+    """在 Mod 库目录下查找所有包含 manifest.json 的 Mod 根目录。"""
     if not library_root.exists() or not library_root.is_dir():
         return []
 
@@ -30,6 +31,7 @@ def discover_mod_roots(library_root: Path) -> list[Path]:
 
 
 def _build_record(analysis: ModAnalysis, existing: ManagedMod | None) -> ManagedMod:
+    """把扫描结果和已有管理器记录合并成最终展示用的记录对象。"""
     manifest = analysis.manifest
     return ManagedMod(
         source_path=analysis.mod_path,
@@ -53,6 +55,7 @@ def _build_record(analysis: ModAnalysis, existing: ManagedMod | None) -> Managed
 
 
 def scan_library(library_root: Path, existing_records: dict[str, ManagedMod] | None = None) -> list[ManagedMod]:
+    """扫描整个 Mod 库，并尽量保留原有启用状态和备注信息。"""
     existing_records = existing_records or {}
     records: list[ManagedMod] = []
 
@@ -67,6 +70,7 @@ def scan_library(library_root: Path, existing_records: dict[str, ManagedMod] | N
 
 
 def resolve_game_mods_root(settings: AppSettings) -> Path | None:
+    """根据设置解析游戏 Mods 目录，优先使用显式指定路径。"""
     if settings.game_mods_root is not None:
         return settings.game_mods_root.expanduser()
     if settings.game_root is not None:
@@ -80,6 +84,7 @@ def deploy_enabled_mods(
     policy: str = "overwrite",
     progress_callback: Callable[[int, int, ManagedMod, str], None] | None = None,
 ) -> ImportReport:
+    """把已启用的 Mod 复制到游戏目录，并按策略处理冲突。"""
     report = ImportReport(game_mods_root=game_mods_root, policy=policy)
     game_mods_root.mkdir(parents=True, exist_ok=True)
 

@@ -8,7 +8,7 @@
 2. 记录 Mod 启用 / 停用状态；
 3. 一键导入启用的 Mod 到游戏 `Mods` 目录；
 4. 扫描 `manifest.json` 与 `i18n` 目录并判断汉化状态；
-5. 使用 OpenAI 配置生成安全的 `i18n/zh.generated.json`。
+5. 使用 OpenAI 配置生成安全的 `i18n/zh.json`。
 
 ## 当前实现结构
 
@@ -18,7 +18,7 @@
 - `src/storage.py`：本地状态文件读写。
 - `src/scanner.py`：扫描 Mod 目录、解析 manifest、定位 locale 文件。
 - `src/detector.py`：判定 Mod 类型、比较 JSON 结构、检测占位符。
-- `src/translator.py`：组装提示词并调用 OpenAI `responses.create(...)`。
+- `src/translator.py`：组装提示词并调用 OpenAI `responses.create(...)`，并提供 AI 连通性测试。
 - `src/writers.py`：JSON 校验与安全写入。
 - `src/models.py`：数据结构定义。
 - `src/prompts.py`：AI 提示词模板。
@@ -41,9 +41,13 @@
 
 在后台线程调用 OpenAI，仅对已启用的 Mod 批量处理 JSON 文本资源，并要求返回合法 JSON。
 
+### 4.1 汉化检查
+
+在 Mod 管理页可单独触发汉化状态检查，复用 `scan_mod()` 更新 `translation_status`、`missing_keys_count` 和警告信息。
+
 ### 5. 写入
 
-默认输出为 `i18n/zh.generated.json`；如果已存在，会自动生成带序号的备用文件名，避免覆盖。
+默认输出为 `i18n/zh.json`；完整时跳过，缺失时补写。
 
 ## 安全策略
 
@@ -66,5 +70,6 @@ python app.py
 
 ## 已知约束 / 备注
 
-- 当前只默认支持 OpenAI AI 配置；
+- 当前只默认支持 OpenAI AI 配置，默认模型为 `gpt-5.4-nano`，`Base URL` 默认值为 `https://api.openai.com/v1`，并保留自定义代理地址兼容中转站；
+- 设置页提供 AI 测试按钮，用于验证当前 API Key / 模型 / Base URL 是否可用；
 - 对混合 flat/tree locale 结构和非常规 i18n 布局，当前按保守策略处理为 `unknown` 或不自动支持。

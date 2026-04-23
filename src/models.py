@@ -7,10 +7,13 @@ from typing import Any, Literal
 TranslationStatus = Literal["translated", "partial", "not_translated", "unknown"]
 ManifestKind = Literal["smapi", "content_pack", "unknown"]
 LocaleLayout = Literal["flat", "tree", "none"]
+DEFAULT_OPENAI_MODEL = "gpt-5.4-nano"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 @dataclass(slots=True)
 class ManifestInfo:
+    """保存 manifest.json 解析后的基础信息。"""
     path: Path
     name: str
     author: str | None = None
@@ -26,6 +29,7 @@ class ManifestInfo:
 
 @dataclass(slots=True)
 class ModAnalysis:
+    """保存单个 Mod 扫描后的分析结果。"""
     mod_path: Path
     mod_name: str
     has_manifest: bool
@@ -48,6 +52,7 @@ class ModAnalysis:
 
 @dataclass(slots=True)
 class TranslationPlan:
+    """描述一次 AI 汉化任务需要的输入和输出。"""
     mod_path: Path
     source_paths: list[Path]
     output_path: Path
@@ -56,6 +61,7 @@ class TranslationPlan:
 
 @dataclass(slots=True)
 class TranslationResult:
+    """保存 AI 汉化完成后的结果数据。"""
     output_path: Path
     source_paths: list[Path]
     payload: Any
@@ -63,20 +69,21 @@ class TranslationResult:
 
 @dataclass(slots=True)
 class AppSettings:
+    """保存程序设置与 AI/导入相关配置。"""
     library_root: Path | None = None
     game_root: Path | None = None
     game_mods_root: Path | None = None
     ai_enabled: bool = True
-    ai_provider: str = "openai"
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
-    openai_base_url: str = ""
+    openai_model: str = DEFAULT_OPENAI_MODEL
+    openai_base_url: str = DEFAULT_OPENAI_BASE_URL
     translation_enabled: bool = True
     import_policy: str = "overwrite"
 
 
 @dataclass(slots=True)
 class ManagedMod:
+    """保存 Mod 管理器里的展示记录和用户备注。"""
     source_path: Path
     enabled: bool = False
     display_name: str = ""
@@ -98,6 +105,7 @@ class ManagedMod:
 
 @dataclass(slots=True)
 class ImportReport:
+    """保存导入流程的结果汇总。"""
     game_mods_root: Path
     copied: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
@@ -107,6 +115,7 @@ class ImportReport:
 
 @dataclass(slots=True)
 class WorkerEvent:
+    """后台线程通过队列发回给 UI 的事件消息。"""
     kind: str
     message: str = ""
     analysis: ModAnalysis | None = None

@@ -14,6 +14,7 @@ SYSTEM_PROMPT = (
 
 
 def build_translation_prompt(payload: Any, source_paths: list[Path], output_name: str) -> str:
+    """把待翻译内容、来源文件和规则拼成给模型使用的提示词。"""
     tokens = sorted(collect_placeholder_tokens(payload))
     sources = "\n".join(f"- {path.as_posix()}" for path in source_paths)
     token_block = ", ".join(tokens) if tokens else "(none detected)"

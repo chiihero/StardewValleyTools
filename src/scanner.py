@@ -9,17 +9,20 @@ from .models import ModAnalysis
 
 
 def _load_json(path: Path) -> Any:
+    """用 UTF-8 BOM 兼容方式读取 JSON 文件。"""
     with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
 
 
 def _discover_json_files(folder: Path) -> list[Path]:
+    """列出目录下所有 JSON 文件，并按文件名排序。"""
     if not folder.exists():
         return []
     return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".json")
 
 
 def _is_tree_locale(folder: Path) -> bool:
+    """判断一个路径是否是 tree 风格的语言目录。"""
     return folder.exists() and folder.is_dir()
 
 
@@ -35,9 +38,9 @@ def _scan_locale_layout(i18n_dir: Path, warnings: list[str]) -> tuple[
     list[Path],
     bool,
 ]:
+    """扫描 i18n 目录，识别 flat/tree 两种语言布局并统计完整度。"""
     default_flat = i18n_dir / "default.json"
     zh_flat = i18n_dir / "zh.json"
-    zh_generated_flat = i18n_dir / "zh.generated.json"
     default_tree = i18n_dir / "default"
     zh_tree = i18n_dir / "zh"
 
@@ -70,11 +73,6 @@ def _scan_locale_layout(i18n_dir: Path, warnings: list[str]) -> tuple[
         zh_layout = "flat"
         zh_root = i18n_dir
         zh_primary = zh_flat
-        has_chinese = True
-    elif zh_generated_flat.exists() and zh_generated_flat.is_file():
-        zh_layout = "flat"
-        zh_root = i18n_dir
-        zh_primary = zh_generated_flat
         has_chinese = True
     elif _is_tree_locale(zh_tree):
         zh_files = _discover_json_files(zh_tree)
@@ -162,6 +160,7 @@ def _scan_locale_layout(i18n_dir: Path, warnings: list[str]) -> tuple[
 
 
 def scan_mod(mod_path: Path) -> ModAnalysis:
+    """扫描单个 Mod 目录，生成用于界面展示和后续处理的分析结果。"""
     mod_path = mod_path.expanduser().resolve()
     warnings: list[str] = []
     manifest_path = mod_path / "manifest.json"

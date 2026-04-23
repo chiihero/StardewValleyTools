@@ -27,10 +27,10 @@
 - 游戏目录；
 - 游戏 `Mods` 目录；
 - AI 开关；
-- AI Provider（默认 OpenAI）；
 - API Key；
 - 模型名；
 - Base URL；
+- AI 测试按钮；
 - 汉化功能开关；
 - 导入策略（覆盖 / 跳过 / 询问）。
 

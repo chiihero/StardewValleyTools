@@ -10,7 +10,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python app.py
+python ./app.py
 if errorlevel 1 (
   echo.
   echo The app exited with an error.

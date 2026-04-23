@@ -26,6 +26,7 @@ class StructureComparison:
 
 
 def classify_manifest(raw: dict[str, Any], path: Path) -> ManifestInfo:
+    """把 manifest.json 的原始字典整理成可直接用于界面的结构化信息。"""
     name = str(raw.get("Name") or path.parent.name)
     author = raw.get("Author")
     unique_id = raw.get("UniqueID")
@@ -67,6 +68,7 @@ def classify_manifest(raw: dict[str, Any], path: Path) -> ManifestInfo:
 
 
 def placeholder_tokens(value: str) -> set[str]:
+    """提取字符串里所有需要在翻译时保留的占位符标记。"""
     tokens: set[str] = set()
     for pattern in _PLACEHOLDER_PATTERNS:
         tokens.update(pattern.findall(value))
@@ -74,6 +76,7 @@ def placeholder_tokens(value: str) -> set[str]:
 
 
 def collect_placeholder_tokens(payload: Any) -> set[str]:
+    """递归收集 JSON 载荷中的占位符，供翻译前后校验使用。"""
     tokens: set[str] = set()
     if isinstance(payload, str):
         tokens.update(placeholder_tokens(payload))
@@ -87,6 +90,7 @@ def collect_placeholder_tokens(payload: Any) -> set[str]:
 
 
 def compare_json_structure(source: Any, candidate: Any, path: str = "") -> StructureComparison:
+    """递归比较两份 JSON 的结构，判断翻译结果是否保留原始形状。"""
     if type(source) is not type(candidate):
         return StructureComparison(
             status="unknown",
@@ -170,8 +174,10 @@ def compare_json_structure(source: Any, candidate: Any, path: str = "") -> Struc
 
 
 def compare_locale_payloads(default_payload: Any, zh_payload: Any) -> StructureComparison:
+    """比较默认语言和中文语言包的结构完整度。"""
     return compare_json_structure(default_payload, zh_payload)
 
 
 def count_json_files(paths: Iterable[Path]) -> int:
+    """统计一组路径迭代器里实际包含的 JSON 文件数量。"""
     return sum(1 for _ in paths)
