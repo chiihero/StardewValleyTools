@@ -40,6 +40,12 @@ def classify_manifest(raw: dict[str, Any], path: Path) -> ManifestInfo:
     elif isinstance(content_pack_value, str):
         content_pack_for = content_pack_value
     minimum_api_version = raw.get("MinimumApiVersion") if isinstance(raw.get("MinimumApiVersion"), str) else None
+    update_keys_raw = raw.get("UpdateKeys")
+    update_keys: list[str] = []
+    if isinstance(update_keys_raw, str):
+        update_keys = [update_keys_raw]
+    elif isinstance(update_keys_raw, list):
+        update_keys = [str(item).strip() for item in update_keys_raw if str(item).strip()]
 
     kind: ManifestKind = "unknown"
     hints: list[str] = []
@@ -49,6 +55,8 @@ def classify_manifest(raw: dict[str, Any], path: Path) -> ManifestInfo:
     if content_pack_for:
         kind = "content_pack"
         hints.append(f"ContentPackFor={content_pack_for}")
+    if update_keys:
+        hints.append(f"UpdateKeys={len(update_keys)}")
     if not hints:
         hints.append("manifest has no EntryDll or ContentPackFor hint")
 
@@ -62,6 +70,7 @@ def classify_manifest(raw: dict[str, Any], path: Path) -> ManifestInfo:
         entry_dll=entry_dll,
         content_pack_for=content_pack_for,
         minimum_api_version=minimum_api_version,
+        update_keys=update_keys,
         kind=kind,
         raw=raw,
     )

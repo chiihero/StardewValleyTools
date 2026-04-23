@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import shutil
 import threading
 import time
 from datetime import datetime
@@ -9,7 +10,15 @@ from typing import Callable
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk, Text
 
 from .manager import deploy_enabled_mods, resolve_game_mods_root, scan_library
-from .models import DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL, AppSettings, ManagedMod, ModAnalysis, WorkerEvent
+from .models import (
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    AppSettings,
+    ManagedMod,
+    ModAnalysis,
+    WorkerEvent,
+)
+from .nexus import NexusService
 from .scanner import scan_mod
 from .storage import load_state, save_state
 from .translator import probe_openai_connection, translate_with_openai
@@ -31,6 +40,14 @@ MOD_TYPE_LABELS = {
     "smapi": "SMAPI 模组",
     "content_pack": "内容包",
     "unknown": "未知",
+}
+NEXUS_UPDATE_STATUS_LABELS = {
+    "unknown": "未知",
+    "no_source": "无来源",
+    "up_to_date": "已最新",
+    "outdated": "可更新",
+    "failed": "失败",
+    "installed": "已安装",
 }
 
 
@@ -57,6 +74,11 @@ def _localized_translation_status(value: str) -> str:
 def _localized_mod_type(value: str) -> str:
     """把 Mod 类型转换成中文显示文本。"""
     return MOD_TYPE_LABELS.get(value, value)
+
+
+def _localized_nexus_status(value: str) -> str:
+    """把 Nexus 更新状态转换成中文显示文本。"""
+    return NEXUS_UPDATE_STATUS_LABELS.get(value, value)
 
 
 class AIOptionsDialog:
@@ -133,6 +155,7 @@ class ModManagerApp:
         self._game_root_var = StringVar(value="")
         self._game_mods_root_var = StringVar(value="")
         self._openai_key_var = StringVar(value="")
+        self._nexus_api_key_var = StringVar(value="")
         self._openai_model_var = StringVar(value=DEFAULT_OPENAI_MODEL)
         self._openai_base_url_var = StringVar(value=DEFAULT_OPENAI_BASE_URL)
         self._import_policy_var = StringVar(value=IMPORT_POLICY_LABELS["overwrite"])
@@ -232,7 +255,18 @@ class ModManagerApp:
         tree_frame.columnconfigure(0, weight=1)
         tree_frame.rowconfigure(0, weight=1)
 
-        columns = ("checked", "enabled", "display_name", "mod_type", "version", "author", "translation_status", "path")
+        columns = (
+            "checked",
+            "enabled",
+            "display_name",
+            "mod_type",
+            "version",
+            "nexus_latest_version",
+            "nexus_update_status",
+            "author",
+            "translation_status",
+            "path",
+        )
         self._mods_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
         headings = {
             "checked": "勾选",
@@ -240,6 +274,8 @@ class ModManagerApp:
             "display_name": "名称",
             "mod_type": "类型",
             "version": "版本",
+            "nexus_latest_version": "远端版本",
+            "nexus_update_status": "更新状态",
             "author": "作者",
             "translation_status": "汉化状态",
             "path": "路径",
@@ -250,6 +286,8 @@ class ModManagerApp:
             "display_name": 180,
             "mod_type": 100,
             "version": 90,
+            "nexus_latest_version": 90,
+            "nexus_update_status": 90,
             "author": 150,
             "translation_status": 110,
             "path": 320,
@@ -285,6 +323,10 @@ class ModManagerApp:
         self._invert_selection_button.pack(side=LEFT, padx=(8, 0))
         self._check_translation_button = ttk.Button(action_row, text="检查汉化情况", command=self._check_translation_action)
         self._check_translation_button.pack(side=LEFT, padx=(8, 0))
+        self._check_nexus_updates_button = ttk.Button(action_row, text="检查 Nexus 更新", command=self._check_nexus_updates_action)
+        self._check_nexus_updates_button.pack(side=LEFT, padx=(8, 0))
+        self._download_nexus_updates_button = ttk.Button(action_row, text="下载并安装更新", command=self._download_nexus_updates_action)
+        self._download_nexus_updates_button.pack(side=LEFT, padx=(8, 0))
         self._translate_button = ttk.Button(action_row, text="汉化", command=self._translate_enabled_action)
         self._translate_button.pack(side=LEFT, padx=(8, 0))
         self._import_enabled_button = ttk.Button(action_row, text="导入启用项", command=self._import_enabled_action)
@@ -336,6 +378,7 @@ class ModManagerApp:
         ttk.Checkbutton(ai_row, text="启用 AI", variable=self._ai_enabled_var).pack(side=LEFT)
         ttk.Checkbutton(ai_row, text="启用汉化功能", variable=self._translation_enabled_var).pack(side=LEFT, padx=(12, 0))
 
+        self._add_text_row(ai_box, "Nexus API Key", self._nexus_api_key_var, secret=True)
         self._add_text_row(ai_box, "API Key", self._openai_key_var, secret=True)
         self._add_text_row(ai_box, "模型", self._openai_model_var)
         self._add_text_row(ai_box, "Base URL", self._openai_base_url_var)
@@ -404,6 +447,7 @@ class ModManagerApp:
         self._game_mods_root_var.set(str(settings.game_mods_root) if settings.game_mods_root else "")
         self._ai_enabled_var.set(settings.ai_enabled)
         self._translation_enabled_var.set(settings.translation_enabled)
+        self._nexus_api_key_var.set(settings.nexus_api_key)
         self._openai_key_var.set(settings.openai_api_key)
         self._openai_model_var.set(settings.openai_model)
         self._openai_base_url_var.set(settings.openai_base_url)
@@ -416,6 +460,7 @@ class ModManagerApp:
             game_root=self._parse_path(self._game_root_var.get()),
             game_mods_root=self._parse_path(self._game_mods_root_var.get()),
             ai_enabled=bool(self._ai_enabled_var.get()),
+            nexus_api_key=self._nexus_api_key_var.get().strip(),
             openai_api_key=self._openai_key_var.get().strip(),
             openai_model=self._openai_model_var.get().strip() or DEFAULT_OPENAI_MODEL,
             openai_base_url=self._openai_base_url_var.get().strip(),
@@ -526,6 +571,56 @@ class ModManagerApp:
             messagebox.showinfo("没有可检查的 Mod", "请先勾选一个 Mod。")
             return
         self._start_worker("检查汉化情况中...", lambda: self._check_translation_worker(target_mods))
+
+    def _nexus_update_targets(self) -> list[ManagedMod]:
+        """优先返回勾选项；如果没有勾选，则回退到当前选中项。"""
+        checked = self._checked_records()
+        if checked:
+            return checked
+        selected = self._selected_record()
+        return [selected] if selected is not None else []
+
+    def _check_nexus_updates_action(self) -> None:
+        """启动 Nexus 更新检查。"""
+        self._settings = self._collect_settings_from_form()
+        if not self._settings.nexus_api_key.strip():
+            answer = messagebox.askyesno("Nexus API Key 未设置", "请先在设置页填写 Nexus API Key。现在打开设置吗？")
+            if answer:
+                self._open_settings_tab()
+            return
+
+        target_mods = self._checked_records() or list(self._mods_by_path.values())
+        if not target_mods:
+            messagebox.showinfo("没有可检查的 Mod", "当前没有可检查的 Mod。")
+            return
+
+        self._persist_state()
+        self._start_worker("检查 Nexus 更新中...", lambda: self._check_nexus_updates_worker(target_mods, self._settings.nexus_api_key))
+
+    def _download_nexus_updates_action(self) -> None:
+        """下载并安装已检查出的 Nexus 更新。"""
+        self._settings = self._collect_settings_from_form()
+        if not self._settings.nexus_api_key.strip():
+            answer = messagebox.askyesno("Nexus API Key 未设置", "请先在设置页填写 Nexus API Key。现在打开设置吗？")
+            if answer:
+                self._open_settings_tab()
+            return
+
+        target_mods = self._nexus_update_targets() or [record for record in self._mods_by_path.values() if record.nexus_update_status == "outdated"]
+        if not target_mods:
+            messagebox.showinfo("没有可更新的 Mod", "请先勾选或选中一个 Mod。")
+            return
+
+        outdated = [record for record in target_mods if record.nexus_update_status == "outdated" or record.nexus_download_url]
+        if not outdated:
+            messagebox.showinfo("没有可下载的更新", "请先检查 Nexus 更新，确认存在可下载的 Mod。")
+            return
+
+        self._persist_state()
+        self._start_worker(
+            "下载并安装 Nexus 更新中...",
+            lambda: self._download_nexus_updates_worker(outdated, self._settings.nexus_api_key),
+        )
 
     def _test_openai_action(self) -> None:
         """使用当前表单值做一次最小化 AI 连通性测试。"""
@@ -735,6 +830,8 @@ class ModManagerApp:
                     record.display_name or record.source_path.name,
                     _localized_mod_type(record.mod_type),
                     record.version or "",
+                    record.nexus_latest_version or "",
+                    _localized_nexus_status(record.nexus_update_status),
                     record.author or "",
                     _localized_translation_status(record.translation_status),
                     str(record.source_path),
@@ -767,6 +864,9 @@ class ModManagerApp:
                 _localized_mod_type(record.mod_type),
                 record.translation_status,
                 _localized_translation_status(record.translation_status),
+                record.nexus_update_status,
+                _localized_nexus_status(record.nexus_update_status),
+                record.nexus_latest_version or "",
                 _boolean_label(record.enabled),
                 _boolean_label(record.checked),
                 _boolean_label(record.has_chinese),
@@ -785,6 +885,8 @@ class ModManagerApp:
             "display_name": record.display_name.lower(),
             "mod_type": record.mod_type,
             "version": record.version or "",
+            "nexus_latest_version": record.nexus_latest_version or "",
+            "nexus_update_status": record.nexus_update_status,
             "author": record.author or "",
             "translation_status": record.translation_status,
             "path": str(record.source_path).lower(),
@@ -961,6 +1063,12 @@ class ModManagerApp:
             f"汉化状态：{_localized_translation_status(record.translation_status)}",
             f"是否有中文：{_boolean_label(record.has_chinese)}",
             f"缺失键数：{record.missing_keys_count}",
+            f"Nexus 更新状态：{_localized_nexus_status(record.nexus_update_status)}",
+            f"Nexus 当前版本：{record.nexus_current_version or '无'}",
+            f"Nexus 远端版本：{record.nexus_latest_version or '无'}",
+            f"Nexus 文件名：{record.nexus_file_name or '无'}",
+            f"Nexus 最后检查：{record.nexus_last_checked or '无'}",
+            f"Nexus 提示：{record.nexus_message or '无'}",
             f"清单：{'已找到' if record.has_manifest else '缺失'}",
             f"清单路径：{record.manifest_path or '无'}",
             f"标签：{', '.join(record.tags) or '无'}",
@@ -1021,6 +1129,119 @@ class ModManagerApp:
             self._queue.put(WorkerEvent(kind="ai_test_failure", message=message, summary=message))
         finally:
             self._queue.put(WorkerEvent(kind="done"))
+
+    def _apply_nexus_update_to_record(self, record: ManagedMod, info) -> None:
+        """把 Nexus 更新结果写回 Mod 记录。"""
+        record.nexus_mod_id = info.mod_id
+        record.nexus_file_id = info.file_id
+        record.nexus_update_status = info.status
+        record.nexus_current_version = info.current_version
+        record.nexus_latest_version = info.latest_version
+        record.nexus_file_name = info.file_name
+        record.nexus_update_url = info.update_url
+        record.nexus_download_url = info.download_url
+        record.nexus_last_checked = info.checked_at
+        record.nexus_message = info.message
+
+    def _check_nexus_updates_worker(self, records: list[ManagedMod], api_key: str) -> None:
+        """在线程中检查 Nexus 更新，并把结果回写到本地记录。"""
+        service = NexusService(api_key)
+        total = len(records)
+        outdated = 0
+        up_to_date = 0
+        no_source = 0
+        unknown = 0
+        failed = 0
+
+        for index, record in enumerate(sorted(records, key=lambda item: item.display_name.lower()), start=1):
+            display_name = record.display_name or record.source_path.name
+            try:
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：检查 Nexus 更新中"))
+                info = service.check_mod(record)
+                self._apply_nexus_update_to_record(record, info)
+                self._persist_state()
+
+                if info.status == "outdated":
+                    outdated += 1
+                elif info.status == "up_to_date":
+                    up_to_date += 1
+                elif info.status == "no_source":
+                    no_source += 1
+                else:
+                    unknown += 1
+
+                self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"[{index}/{total}] {display_name}：{_localized_nexus_status(info.status)}"))
+            except Exception as exc:
+                failed += 1
+                record.nexus_update_status = "failed"
+                record.nexus_message = str(exc)
+                record.nexus_last_checked = datetime.now().isoformat(timespec="seconds")
+                self._persist_state()
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：检查失败 -> {exc}"))
+                self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"[{index}/{total}] {display_name}：失败"))
+
+        summary = f"Nexus 更新检查完成：可更新 {outdated}，已最新 {up_to_date}，无来源 {no_source}，未知 {unknown}，失败 {failed}。"
+        self._queue.put(WorkerEvent(kind="summary", summary=summary, message=summary))
+        self._queue.put(WorkerEvent(kind="log", message=summary))
+        self._queue.put(WorkerEvent(kind="done"))
+
+    def _download_nexus_updates_worker(self, records: list[ManagedMod], api_key: str) -> None:
+        """在线程中下载并安装 Nexus 更新。"""
+        service = NexusService(api_key)
+        total = len(records)
+        installed = 0
+        skipped = 0
+        failed = 0
+
+        for index, record in enumerate(sorted(records, key=lambda item: item.display_name.lower()), start=1):
+            display_name = record.display_name or record.source_path.name
+            try:
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：准备下载更新"))
+                info = service.check_mod(record) if record.nexus_update_status not in {"outdated", "up_to_date"} else None
+                if info is not None:
+                    self._apply_nexus_update_to_record(record, info)
+
+                effective_info = info or service.check_mod(record)
+                if effective_info.status != "outdated" or not effective_info.download_url:
+                    skipped += 1
+                    record.nexus_message = effective_info.message or "没有可下载的更新。"
+                    self._persist_state()
+                    self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：跳过（{record.nexus_message}）"))
+                    self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"[{index}/{total}] {display_name}：跳过"))
+                    continue
+
+                archive_path = service.download_update(effective_info)
+                try:
+                    install_result = service.install_download(record, archive_path)
+                    refreshed = scan_mod(record.source_path)
+                    self._apply_analysis_to_record(record, refreshed)
+                    record.nexus_update_status = "up_to_date"
+                    record.nexus_current_version = refreshed.manifest.version if refreshed.manifest is not None else effective_info.latest_version
+                    record.nexus_latest_version = effective_info.latest_version
+                    record.nexus_file_name = effective_info.file_name
+                    record.nexus_update_url = effective_info.update_url
+                    record.nexus_download_url = effective_info.download_url
+                    record.nexus_last_checked = datetime.now().isoformat(timespec="seconds")
+                    record.nexus_message = install_result.message
+                    self._persist_state()
+                    installed += 1
+                    self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：{install_result.message}"))
+                    self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"[{index}/{total}] {display_name}：已安装"))
+                finally:
+                    shutil.rmtree(archive_path.parent, ignore_errors=True)
+            except Exception as exc:
+                failed += 1
+                record.nexus_update_status = "failed"
+                record.nexus_message = str(exc)
+                record.nexus_last_checked = datetime.now().isoformat(timespec="seconds")
+                self._persist_state()
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：安装失败 -> {exc}"))
+                self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"[{index}/{total}] {display_name}：失败"))
+
+        summary = f"Nexus 更新处理完成：已安装 {installed}，跳过 {skipped}，失败 {failed}。"
+        self._queue.put(WorkerEvent(kind="summary", summary=summary, message=summary))
+        self._queue.put(WorkerEvent(kind="log", message=summary))
+        self._queue.put(WorkerEvent(kind="done"))
 
     def _translate_worker(self, records: list[ManagedMod], mode: str) -> None:
         """逐个处理选中的 Mod，并在后台执行正式汉化。"""
@@ -1119,6 +1340,8 @@ class ModManagerApp:
         self._scan_button.configure(state=action_state if has_library else "disabled")
         self._import_enabled_button.configure(state=action_state if has_enabled else "disabled")
         self._check_translation_button.configure(state=action_state if has_checked else "disabled")
+        self._check_nexus_updates_button.configure(state=action_state if has_library else "disabled")
+        self._download_nexus_updates_button.configure(state=action_state if has_library else "disabled")
         self._translate_button.configure(state=action_state if (ai_ready and has_checked) else "disabled")
         has_visible_records = bool(self._mods_tree.get_children())
         self._select_all_button.configure(state=action_state if has_visible_records else "disabled")
@@ -1195,7 +1418,8 @@ class ModManagerApp:
             self._sync_button_states()
             self._progress_bar["value"] = 0
             self._progress_var.set("0%")
-            if self._status_var.get() in {"扫描 Mod 库中...", "汉化处理中...", "导入启用的 Mod 中..."}:
+            self._refresh_mod_tree()
+            if self._status_var.get() in {"扫描 Mod 库中...", "汉化处理中...", "导入启用的 Mod 中...", "检查 Nexus 更新中...", "下载并安装 Nexus 更新中...", "检查汉化情况中...", "测试 AI 配置中..."}:
                 self._status_var.set("Idle")
 
     def _append_log(self, message: str) -> None:

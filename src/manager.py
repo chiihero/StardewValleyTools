@@ -33,6 +33,7 @@ def discover_mod_roots(library_root: Path) -> list[Path]:
 def _build_record(analysis: ModAnalysis, existing: ManagedMod | None) -> ManagedMod:
     """把扫描结果和已有管理器记录合并成最终展示用的记录对象。"""
     manifest = analysis.manifest
+    version_changed = existing is not None and (existing.version or "") != (manifest.version if manifest is not None and manifest.version is not None else "")
     return ManagedMod(
         source_path=analysis.mod_path,
         checked=existing.checked if existing is not None else False,
@@ -47,6 +48,16 @@ def _build_record(analysis: ModAnalysis, existing: ManagedMod | None) -> Managed
         missing_keys_count=analysis.missing_keys_count,
         has_manifest=analysis.has_manifest,
         manifest_path=analysis.manifest_path,
+        nexus_mod_id=existing.nexus_mod_id if existing is not None else None,
+        nexus_file_id=existing.nexus_file_id if existing is not None else None,
+        nexus_update_status=existing.nexus_update_status if existing is not None and version_changed is False else "unknown",
+        nexus_current_version=existing.nexus_current_version if existing is not None and version_changed is False else None,
+        nexus_latest_version=existing.nexus_latest_version if existing is not None and version_changed is False else None,
+        nexus_file_name=existing.nexus_file_name if existing is not None and version_changed is False else None,
+        nexus_update_url=existing.nexus_update_url if existing is not None and version_changed is False else None,
+        nexus_download_url=existing.nexus_download_url if existing is not None and version_changed is False else None,
+        nexus_last_checked=existing.nexus_last_checked if existing is not None and version_changed is False else None,
+        nexus_message=existing.nexus_message if existing is not None and version_changed is False else "",
         tags=list(existing.tags) if existing is not None else [],
         notes=existing.notes if existing is not None else "",
         last_scanned=datetime.now().isoformat(timespec="seconds"),

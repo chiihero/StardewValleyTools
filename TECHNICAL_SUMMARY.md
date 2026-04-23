@@ -8,7 +8,8 @@
 2. 记录 Mod 启用 / 停用状态；
 3. 一键导入启用的 Mod 到游戏 `Mods` 目录；
 4. 扫描 `manifest.json` 与 `i18n` 目录并判断汉化状态；
-5. 使用 OpenAI 配置生成安全的 `i18n/zh.json`。
+5. 检查 Nexus 更新、下载并安装可更新的 Mod；
+6. 使用 OpenAI 配置生成安全的 `i18n/zh.json`。
 
 ## 当前实现结构
 
@@ -20,6 +21,7 @@
 - `src/detector.py`：判定 Mod 类型、比较 JSON 结构、检测占位符。
 - `src/translator.py`：组装提示词并调用 OpenAI `responses.create(...)`，并提供 AI 连通性测试。
 - `src/writers.py`：JSON 校验与安全写入。
+- `src/nexus.py`：Nexus 更新检查、下载链接解析、压缩包解压与更新安装。
 - `src/models.py`：数据结构定义。
 - `src/prompts.py`：AI 提示词模板。
 
@@ -49,12 +51,17 @@
 
 默认输出为 `i18n/zh.json`；完整时跳过，缺失时补写。
 
+### 6. Nexus 更新
+
+程序从 `manifest.json` 的 Nexus 更新键读取 mod id / file id，查询 Nexus API 后展示更新状态，并支持下载更新包、解压后替换本地 Mod 库中的目标目录。
+
 ## 安全策略
 
 - 不直接覆盖原始 `zh.json`。
 - AI 返回内容必须通过 JSON 校验。
 - 占位符 token 需要保留，如 `{{token}}`、`{0}`、`[SMAPI]`。
 - GUI 线程不阻塞，扫描 / 导入 / 翻译都放入后台线程。
+- Nexus 更新检查与下载也放入后台线程，避免卡住界面。
 
 ## 本地状态文件
 
@@ -72,4 +79,6 @@ python app.py
 
 - 当前只默认支持 OpenAI AI 配置，默认模型为 `gpt-5.4-nano`，`Base URL` 默认值为 `https://api.openai.com/v1`，并保留自定义代理地址兼容中转站；
 - 设置页提供 AI 测试按钮，用于验证当前 API Key / 模型 / Base URL 是否可用；
+- 设置页新增 Nexus API Key，用于 Nexus 更新检查与下载；
+- 更新包支持 zip，7z 依赖 `py7zr`；
 - 对混合 flat/tree locale 结构和非常规 i18n 布局，当前按保守策略处理为 `unknown` 或不自动支持。

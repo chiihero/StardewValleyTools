@@ -7,8 +7,34 @@ from typing import Any, Literal
 TranslationStatus = Literal["translated", "partial", "not_translated", "unknown"]
 ManifestKind = Literal["smapi", "content_pack", "unknown"]
 LocaleLayout = Literal["flat", "tree", "none"]
+UpdateStatus = Literal["unknown", "no_source", "up_to_date", "outdated", "failed", "installed"]
 DEFAULT_OPENAI_MODEL = "gpt-5.4-nano"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+
+@dataclass(slots=True)
+class NexusUpdateInfo:
+    """保存单个 Mod 的 Nexus 更新检查结果。"""
+    status: UpdateStatus = "unknown"
+    mod_id: int | None = None
+    file_id: int | None = None
+    current_version: str | None = None
+    latest_version: str | None = None
+    file_name: str | None = None
+    download_url: str | None = None
+    update_url: str | None = None
+    checked_at: str | None = None
+    message: str = ""
+
+
+@dataclass(slots=True)
+class NexusDownloadResult:
+    """保存一次 Nexus 下载与安装过程的结果。"""
+    status: str = "unknown"
+    downloaded_path: Path | None = None
+    extracted_path: Path | None = None
+    installed_path: Path | None = None
+    message: str = ""
 
 
 @dataclass(slots=True)
@@ -23,6 +49,7 @@ class ManifestInfo:
     entry_dll: str | None = None
     content_pack_for: str | None = None
     minimum_api_version: str | None = None
+    update_keys: list[str] = field(default_factory=list)
     kind: ManifestKind = "unknown"
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -74,6 +101,7 @@ class AppSettings:
     game_root: Path | None = None
     game_mods_root: Path | None = None
     ai_enabled: bool = True
+    nexus_api_key: str = ""
     openai_api_key: str = ""
     openai_model: str = DEFAULT_OPENAI_MODEL
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL
@@ -97,6 +125,16 @@ class ManagedMod:
     missing_keys_count: int = 0
     has_manifest: bool = False
     manifest_path: Path | None = None
+    nexus_mod_id: int | None = None
+    nexus_file_id: int | None = None
+    nexus_update_status: UpdateStatus = "unknown"
+    nexus_current_version: str | None = None
+    nexus_latest_version: str | None = None
+    nexus_file_name: str | None = None
+    nexus_update_url: str | None = None
+    nexus_download_url: str | None = None
+    nexus_last_checked: str | None = None
+    nexus_message: str = ""
     tags: list[str] = field(default_factory=list)
     notes: str = ""
     last_scanned: str | None = None
