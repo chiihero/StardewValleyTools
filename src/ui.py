@@ -21,6 +21,42 @@ IMPORT_POLICY_LABELS = {
     "prompt": "询问",
 }
 IMPORT_POLICY_VALUES = {label: value for value, label in IMPORT_POLICY_LABELS.items()}
+TRANSLATION_STATUS_LABELS = {
+    "translated": "已汉化",
+    "partial": "部分汉化",
+    "not_translated": "未汉化",
+    "unknown": "未知",
+}
+MOD_TYPE_LABELS = {
+    "smapi": "SMAPI 模组",
+    "content_pack": "内容包",
+    "unknown": "未知",
+}
+
+
+def _checkbox_symbol(value: bool) -> str:
+    """把布尔状态渲染成复选框样式的文本符号。"""
+    return "☑" if value else "☐"
+
+
+def _boolean_label(value: bool) -> str:
+    """把布尔值渲染成中文标签。"""
+    return "是" if value else "否"
+
+
+def _localized_enabled_state(value: bool) -> str:
+    """把启用状态渲染成中文文字。"""
+    return "启用" if value else "禁用"
+
+
+def _localized_translation_status(value: str) -> str:
+    """把汉化状态转换成中文显示文本。"""
+    return TRANSLATION_STATUS_LABELS.get(value, value)
+
+
+def _localized_mod_type(value: str) -> str:
+    """把 Mod 类型转换成中文显示文本。"""
+    return MOD_TYPE_LABELS.get(value, value)
 
 
 class AIOptionsDialog:
@@ -107,7 +143,7 @@ class ModManagerApp:
         self._status_var = StringVar(value="Idle")
         self._progress_var = StringVar(value="0%")
         self._summary_var = StringVar(value="")
-        self._selected_count_var = StringVar(value="已选择 0 个")
+        self._selected_count_var = StringVar(value="已选中 0 个 | 已勾选 0 个")
 
         self._sort_column = "display_name"
         self._sort_reverse = False
@@ -196,9 +232,10 @@ class ModManagerApp:
         tree_frame.columnconfigure(0, weight=1)
         tree_frame.rowconfigure(0, weight=1)
 
-        columns = ("enabled", "display_name", "mod_type", "version", "author", "translation_status", "path")
-        self._mods_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="extended")
+        columns = ("checked", "enabled", "display_name", "mod_type", "version", "author", "translation_status", "path")
+        self._mods_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
         headings = {
+            "checked": "勾选",
             "enabled": "启用",
             "display_name": "名称",
             "mod_type": "类型",
@@ -208,13 +245,14 @@ class ModManagerApp:
             "path": "路径",
         }
         widths = {
+            "checked": 70,
             "enabled": 70,
             "display_name": 180,
             "mod_type": 100,
             "version": 90,
             "author": 150,
             "translation_status": 110,
-            "path": 340,
+            "path": 320,
         }
         for column in columns:
             self._mods_tree.heading(column, text=headings[column], command=lambda c=column: self._toggle_sort(c))
@@ -235,15 +273,15 @@ class ModManagerApp:
         action_row = ttk.Frame(left)
         action_row.pack(fill=X, pady=(10, 0))
         ttk.Label(action_row, textvariable=self._selected_count_var, foreground="#655748").pack(side=LEFT, padx=(0, 8))
-        self._enable_button = ttk.Button(action_row, text="启用所选", command=lambda: self._set_selected_enabled(True))
+        self._enable_button = ttk.Button(action_row, text="启用勾选", command=lambda: self._set_selected_enabled(True))
         self._enable_button.pack(side=LEFT)
-        self._disable_button = ttk.Button(action_row, text="停用所选", command=lambda: self._set_selected_enabled(False))
+        self._disable_button = ttk.Button(action_row, text="停用勾选", command=lambda: self._set_selected_enabled(False))
         self._disable_button.pack(side=LEFT, padx=(8, 0))
-        self._select_all_button = ttk.Button(action_row, text="全选", command=self._select_all_mods)
+        self._select_all_button = ttk.Button(action_row, text="全选勾选", command=self._select_all_mods)
         self._select_all_button.pack(side=LEFT, padx=(8, 0))
-        self._clear_selection_button = ttk.Button(action_row, text="清空选择", command=self._clear_selection)
+        self._clear_selection_button = ttk.Button(action_row, text="清空勾选", command=self._clear_selection)
         self._clear_selection_button.pack(side=LEFT, padx=(8, 0))
-        self._invert_selection_button = ttk.Button(action_row, text="反选", command=self._invert_selection)
+        self._invert_selection_button = ttk.Button(action_row, text="反选勾选", command=self._invert_selection)
         self._invert_selection_button.pack(side=LEFT, padx=(8, 0))
         self._check_translation_button = ttk.Button(action_row, text="检查汉化情况", command=self._check_translation_action)
         self._check_translation_button.pack(side=LEFT, padx=(8, 0))
@@ -254,7 +292,7 @@ class ModManagerApp:
 
         ttk.Label(
             left,
-            text="提示：点击“启用”列切换状态；汉化优先处理选中项（未选择则处理已启用）；导入只导入已启用。",
+            text="提示：点击“勾选”列批量选择，点击“启用”列切换状态；汉化/检查优先处理勾选项；导入只导入已启用。",
             foreground="#655748",
         ).pack(anchor="w", pady=(8, 0))
 
@@ -482,10 +520,10 @@ class ModManagerApp:
         )
 
     def _check_translation_action(self) -> None:
-        """检查当前选中或已启用 Mod 的汉化完整度。"""
+        """检查当前勾选 Mod 的汉化完整度。"""
         target_mods = self._records_for_batch_action()
         if not target_mods:
-            messagebox.showinfo("没有可检查的 Mod", "请先选择一个 Mod，或者至少启用一个 Mod。")
+            messagebox.showinfo("没有可检查的 Mod", "请先勾选一个 Mod。")
             return
         self._start_worker("检查汉化情况中...", lambda: self._check_translation_worker(target_mods))
 
@@ -528,7 +566,7 @@ class ModManagerApp:
             self._queue.put(WorkerEvent(kind="done"))
 
     def _check_translation_worker(self, records: list[ManagedMod]) -> None:
-        """逐个扫描 Mod，并汇总汉化完整度、缺失键和异常信息。"""
+        """逐个扫描勾选的 Mod，并汇总汉化完整度、缺失键和异常信息。"""
         total = len(records)
         translated = 0
         partial = 0
@@ -572,7 +610,7 @@ class ModManagerApp:
         self._queue.put(WorkerEvent(kind="done"))
 
     def _translate_enabled_action(self) -> None:
-        """根据当前选择的 Mod 和设置，启动 AI 汉化批处理。"""
+        """根据当前勾选的 Mod 和设置，启动 AI 汉化批处理。"""
         self._settings = self._collect_settings_from_form()
         if not self._settings.ai_enabled or not self._settings.translation_enabled:
             messagebox.showwarning("AI 未启用", "请先在设置页启用 AI 和汉化功能。")
@@ -580,7 +618,7 @@ class ModManagerApp:
 
         target_mods = self._records_for_batch_action()
         if not target_mods:
-            messagebox.showinfo("没有启用项", "请先启用至少一个 Mod。")
+            messagebox.showinfo("没有勾选项", "请先勾选至少一个 Mod。")
             return
 
         dialog = AIOptionsDialog(
@@ -597,7 +635,7 @@ class ModManagerApp:
         self._start_worker("汉化处理中...", lambda: self._translate_worker(target_mods, mode))
 
     def _translate_worker(self, records: list[ManagedMod], mode: str) -> None:
-        """逐个处理选中的 Mod，并在后台执行正式汉化。"""
+        """逐个处理勾选的 Mod，并在后台执行正式汉化。"""
         total = len(records)
         success = 0
         skipped = 0
@@ -692,12 +730,13 @@ class ModManagerApp:
                 END,
                 iid=iid,
                 values=(
-                    "☑" if record.enabled else "☐",
+                    _checkbox_symbol(record.checked),
+                    _localized_enabled_state(record.enabled),
                     record.display_name or record.source_path.name,
-                    record.mod_type,
+                    _localized_mod_type(record.mod_type),
                     record.version or "",
                     record.author or "",
-                    record.translation_status,
+                    _localized_translation_status(record.translation_status),
                     str(record.source_path),
                 ),
             )
@@ -725,7 +764,12 @@ class ModManagerApp:
                 record.version or "",
                 record.unique_id or "",
                 record.mod_type,
+                _localized_mod_type(record.mod_type),
                 record.translation_status,
+                _localized_translation_status(record.translation_status),
+                _boolean_label(record.enabled),
+                _boolean_label(record.checked),
+                _boolean_label(record.has_chinese),
                 str(record.source_path),
                 " ".join(record.tags),
                 record.notes,
@@ -736,6 +780,7 @@ class ModManagerApp:
     def _sort_key(self, record: ManagedMod):
         """返回当前列对应的排序键。"""
         columns = {
+            "checked": (0 if record.checked else 1, record.display_name.lower()),
             "enabled": (0 if record.enabled else 1, record.display_name.lower()),
             "display_name": record.display_name.lower(),
             "mod_type": record.mod_type,
@@ -756,31 +801,43 @@ class ModManagerApp:
         self._refresh_mod_tree()
 
     def _select_all_mods(self) -> None:
-        """选中列表中的所有 Mod。"""
-        self._mods_tree.selection_set(self._mods_tree.get_children())
+        """勾选列表中的所有 Mod。"""
+        for iid in self._mods_tree.get_children():
+            record = self._mods_by_path.get(iid)
+            if record is None:
+                continue
+            record.checked = True
+        self._persist_state()
+        self._refresh_mod_tree()
         self._update_selection_summary()
-        self._sync_button_states()
 
     def _clear_selection(self) -> None:
-        """清空当前列表选择。"""
-        self._mods_tree.selection_remove(self._mods_tree.selection())
+        """清空当前勾选。"""
+        for iid in self._mods_tree.get_children():
+            record = self._mods_by_path.get(iid)
+            if record is None:
+                continue
+            record.checked = False
+        self._persist_state()
+        self._refresh_mod_tree()
         self._update_selection_summary()
-        self._sync_button_states()
 
     def _invert_selection(self) -> None:
-        """把当前选择与未选择项互换。"""
-        current = set(self._mods_tree.selection())
-        all_items = list(self._mods_tree.get_children())
-        self._mods_tree.selection_set([item for item in all_items if item not in current])
+        """反转当前勾选状态。"""
+        for iid in self._mods_tree.get_children():
+            record = self._mods_by_path.get(iid)
+            if record is None:
+                continue
+            record.checked = not record.checked
+        self._persist_state()
+        self._refresh_mod_tree()
         self._update_selection_summary()
-        self._sync_button_states()
 
     def _on_tree_click(self, event) -> str | None:
-        """点击启用列时直接切换 Mod 的启用状态。"""
+        """点击勾选列或启用列时直接切换对应状态。"""
         if self._mods_tree.identify_region(event.x, event.y) != "cell":
             return None
-        if self._mods_tree.identify_column(event.x) != "#1":
-            return None
+        column = self._mods_tree.identify_column(event.x)
         iid = self._mods_tree.identify_row(event.y)
         if not iid:
             return None
@@ -789,7 +846,12 @@ class ModManagerApp:
         if record is None:
             return None
 
-        record.enabled = not record.enabled
+        if column == "#1":
+            record.checked = not record.checked
+        elif column == "#2":
+            record.enabled = not record.enabled
+        else:
+            return None
         self._persist_state()
         self._refresh_mod_tree()
         self._mods_tree.selection_set(iid)
@@ -820,25 +882,29 @@ class ModManagerApp:
         return [self._mods_by_path[iid] for iid in self._mods_tree.selection() if iid in self._mods_by_path]
 
     def _update_selection_summary(self) -> None:
-        """更新选择数量和库摘要。"""
-        count = len(self._mods_tree.selection())
-        self._selected_count_var.set(f"已选择 {count} 个")
+        """更新当前选中与勾选数量，并同步库摘要。"""
+        selected_count = len(self._mods_tree.selection())
+        checked_count = len(self._checked_records())
+        self._selected_count_var.set(f"已选中 {selected_count} 个 | 已勾选 {checked_count} 个")
         self._update_library_summary()
+
+    def _checked_records(self) -> list[ManagedMod]:
+        """返回所有已勾选的 Mod 记录。"""
+        return [record for record in self._mods_by_path.values() if record.checked]
 
     def _enabled_records(self) -> list[ManagedMod]:
         """返回所有已启用的 Mod。"""
         return [record for record in self._mods_by_path.values() if record.enabled]
 
     def _records_for_batch_action(self) -> list[ManagedMod]:
-        """优先使用当前选中项，否则退回到所有已启用项。"""
-        selected = self._selected_records()
-        return selected if selected else self._enabled_records()
+        """优先使用当前勾选项。"""
+        return self._checked_records()
 
     def _set_selected_enabled(self, enabled: bool) -> None:
-        """批量设置当前选中 Mod 的启用状态。"""
-        records = self._selected_records()
+        """批量设置当前勾选 Mod 的启用状态。"""
+        records = self._checked_records()
         if not records:
-            messagebox.showinfo("未选择 Mod", "请先选择一个 Mod。")
+            messagebox.showinfo("未勾选 Mod", "请先勾选一个 Mod。")
             return
         for record in records:
             record.enabled = enabled
@@ -884,23 +950,24 @@ class ModManagerApp:
     def _render_record_summary(self, record: ManagedMod) -> str:
         """把 Mod 记录格式化成可读的详情文本。"""
         lines = [
-            f"Folder: {record.source_path}",
-            f"Enabled: {'yes' if record.enabled else 'no'}",
-            f"Name: {record.display_name or record.source_path.name}",
-            f"Author: {record.author or 'n/a'}",
-            f"Version: {record.version or 'n/a'}",
-            f"Type: {record.mod_type}",
-            f"UniqueID: {record.unique_id or 'n/a'}",
-            f"Translation status: {record.translation_status}",
-            f"Chinese present: {'yes' if record.has_chinese else 'no'}",
-            f"Missing keys: {record.missing_keys_count}",
-            f"Manifest: {'found' if record.has_manifest else 'missing'}",
-            f"Manifest path: {record.manifest_path or 'n/a'}",
-            f"Tags: {', '.join(record.tags) or 'n/a'}",
-            f"Notes: {record.notes or 'n/a'}",
+            f"路径：{record.source_path}",
+            f"已勾选：{_boolean_label(record.checked)}",
+            f"已启用：{_boolean_label(record.enabled)}",
+            f"名称：{record.display_name or record.source_path.name}",
+            f"作者：{record.author or '无'}",
+            f"版本：{record.version or '无'}",
+            f"类型：{_localized_mod_type(record.mod_type)}",
+            f"唯一 ID：{record.unique_id or '无'}",
+            f"汉化状态：{_localized_translation_status(record.translation_status)}",
+            f"是否有中文：{_boolean_label(record.has_chinese)}",
+            f"缺失键数：{record.missing_keys_count}",
+            f"清单：{'已找到' if record.has_manifest else '缺失'}",
+            f"清单路径：{record.manifest_path or '无'}",
+            f"标签：{', '.join(record.tags) or '无'}",
+            f"备注：{record.notes or '无'}",
         ]
         if record.warnings:
-            lines.append("Warnings:")
+            lines.append("警告：")
             lines.extend(f"- {warning}" for warning in record.warnings)
         return "\n".join(lines)
 
@@ -920,9 +987,9 @@ class ModManagerApp:
             messagebox.showwarning("AI 未启用", "请先在设置页启用 AI 和汉化功能。")
             return
 
-        enabled_mods = self._enabled_records()
+        enabled_mods = self._checked_records()
         if not enabled_mods:
-            messagebox.showinfo("没有启用项", "请先启用至少一个 Mod。")
+            messagebox.showinfo("没有勾选项", "请先勾选至少一个 Mod。")
             return
 
         dialog = AIOptionsDialog(
@@ -1040,6 +1107,7 @@ class ModManagerApp:
         """根据当前选择、配置和后台运行状态切换按钮可用性。"""
         has_selection = self._selected_record() is not None
         has_library = self._parse_path(self._library_root_var.get()) is not None
+        has_checked = bool(self._checked_records())
         enabled_records = self._enabled_records()
         has_enabled = bool(enabled_records)
         ai_ready = self._ai_enabled_var.get() and self._translation_enabled_var.get() and has_enabled
@@ -1050,8 +1118,12 @@ class ModManagerApp:
 
         self._scan_button.configure(state=action_state if has_library else "disabled")
         self._import_enabled_button.configure(state=action_state if has_enabled else "disabled")
-        self._check_translation_button.configure(state=action_state if (has_selection or has_enabled) else "disabled")
-        self._translate_button.configure(state=action_state if ai_ready else "disabled")
+        self._check_translation_button.configure(state=action_state if has_checked else "disabled")
+        self._translate_button.configure(state=action_state if (ai_ready and has_checked) else "disabled")
+        has_visible_records = bool(self._mods_tree.get_children())
+        self._select_all_button.configure(state=action_state if has_visible_records else "disabled")
+        self._clear_selection_button.configure(state=action_state if has_visible_records else "disabled")
+        self._invert_selection_button.configure(state=action_state if has_visible_records else "disabled")
         self._enable_button.configure(state=selected_state)
         self._disable_button.configure(state=selected_state)
         self._save_meta_button.configure(state=selected_state)

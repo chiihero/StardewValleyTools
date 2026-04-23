@@ -11,7 +11,7 @@ python app.py
 ## Workflow
 
 1. Set the mod library path and game path in Settings.
-2. Scan the library and toggle enabled / disabled directly from the Mod list.
+2. Scan the library, use the "勾选" column for batch selection, and toggle enabled / disabled in the separate "启用" column.
 3. Use the bottom action buttons to check translation status, import enabled mods, or run batch AI translation.
 4. AI translation writes to `i18n/zh.json` and logs progress.
 
@@ -19,6 +19,7 @@ python app.py
 
 - Enabled / disabled is stored as manager metadata only.
 - 切换 Mod 选择后，相关操作按钮会立即跟随当前选择状态刷新，不需要额外点一次“重新扫描”。
+- 勾选列用于批量操作；详情面板仍只跟随单行选中。
 - Import only copies enabled mods; it does not delete other mods in the game folder.
 - AI translation defaults to OpenAI, uses `gpt-5.4-nano`, and the `Base URL` field defaults to `https://api.openai.com/v1`.
 - You can still change `Base URL` to a proxy endpoint when needed.

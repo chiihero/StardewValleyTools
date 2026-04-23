@@ -85,6 +85,7 @@ class AppSettings:
 class ManagedMod:
     """保存 Mod 管理器里的展示记录和用户备注。"""
     source_path: Path
+    checked: bool = False
     enabled: bool = False
     display_name: str = ""
     author: str | None = None

@@ -68,6 +68,7 @@ def serialize_mod(record: ManagedMod) -> dict[str, Any]:
     """把单个 Mod 记录转成可序列化字典。"""
     return {
         "source_path": str(record.source_path),
+        "checked": record.checked,
         "enabled": record.enabled,
         "display_name": record.display_name,
         "author": record.author,
@@ -90,6 +91,7 @@ def deserialize_mod(raw: dict[str, Any]) -> ManagedMod:
     """从持久化字典恢复单个 Mod 记录。"""
     return ManagedMod(
         source_path=Path(str(raw.get("source_path") or "")).expanduser(),
+        checked=bool(raw.get("checked", False)),
         enabled=bool(raw.get("enabled", False)),
         display_name=str(raw.get("display_name") or ""),
         author=raw.get("author") if raw.get("author") is not None else None,

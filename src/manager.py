@@ -35,6 +35,7 @@ def _build_record(analysis: ModAnalysis, existing: ManagedMod | None) -> Managed
     manifest = analysis.manifest
     return ManagedMod(
         source_path=analysis.mod_path,
+        checked=existing.checked if existing is not None else False,
         enabled=existing.enabled if existing is not None else False,
         display_name=analysis.mod_name,
         author=manifest.author if manifest is not None else None,
