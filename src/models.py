@@ -159,6 +159,7 @@ class WorkerEvent:
     message: str = ""
     analysis: ModAnalysis | None = None
     result: TranslationResult | None = None
+    api_key: str | None = None
     mods: list[ManagedMod] = field(default_factory=list)
     import_report: ImportReport | None = None
     progress: int | None = None

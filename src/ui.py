@@ -19,6 +19,7 @@ from .models import (
     WorkerEvent,
 )
 from .nexus import NexusService
+from .nexus_auth import NexusAuthSession
 from .scanner import scan_mod
 from .storage import load_state, save_state
 from .translator import probe_openai_connection, translate_with_openai
@@ -308,8 +309,9 @@ class ModManagerApp:
         self._mods_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self._mods_tree.bind("<Button-1>", self._on_tree_click)
 
-        action_row = ttk.Frame(left)
-        action_row.pack(fill=X, pady=(10, 0))
+        # 把底部批量操作和提示放进列表卡片里，避免在窗口高度不足时被挤出可视区域。
+        action_row = ttk.Frame(list_box)
+        action_row.pack(fill=X, padx=8, pady=(10, 0))
         ttk.Label(action_row, textvariable=self._selected_count_var, foreground="#655748").pack(side=LEFT, padx=(0, 8))
         self._enable_button = ttk.Button(action_row, text="启用勾选", command=lambda: self._set_selected_enabled(True))
         self._enable_button.pack(side=LEFT)
@@ -333,10 +335,10 @@ class ModManagerApp:
         self._import_enabled_button.pack(side=LEFT, padx=(8, 0))
 
         ttk.Label(
-            left,
+            list_box,
             text="提示：点击“勾选”列批量选择，点击“启用”列切换状态；汉化/检查优先处理勾选项；导入只导入已启用。",
             foreground="#655748",
-        ).pack(anchor="w", pady=(8, 0))
+        ).pack(anchor="w", padx=8, pady=(8, 8))
 
         detail_box = ttk.LabelFrame(right, text="详情")
         detail_box.pack(fill=BOTH, expand=True)
@@ -378,7 +380,17 @@ class ModManagerApp:
         ttk.Checkbutton(ai_row, text="启用 AI", variable=self._ai_enabled_var).pack(side=LEFT)
         ttk.Checkbutton(ai_row, text="启用汉化功能", variable=self._translation_enabled_var).pack(side=LEFT, padx=(12, 0))
 
-        self._add_text_row(ai_box, "Nexus API Key", self._nexus_api_key_var, secret=True)
+        self._nexus_api_key_button = self._add_text_row_with_action(
+            ai_box,
+            "Nexus API Key",
+            self._nexus_api_key_var,
+            "获取 API Key",
+            self._request_nexus_api_key_action,
+            secret=True,
+        )
+        ttk.Label(ai_box, text="点击后会打开 Nexus 登录页，并在完成授权后自动回填 API Key。", foreground="#655748").pack(
+            anchor="w", padx=8, pady=(0, 4)
+        )
         self._add_text_row(ai_box, "API Key", self._openai_key_var, secret=True)
         self._add_text_row(ai_box, "模型", self._openai_model_var)
         self._add_text_row(ai_box, "Base URL", self._openai_base_url_var)
@@ -432,6 +444,24 @@ class ModManagerApp:
         row.pack(fill=X, padx=8, pady=(4, 4))
         ttk.Label(row, text=label).pack(side=LEFT)
         ttk.Entry(row, textvariable=var, show="*" if secret else "").pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
+
+    def _add_text_row_with_action(
+        self,
+        parent: ttk.Widget,
+        label: str,
+        var: StringVar,
+        button_text: str,
+        command: Callable[[], None],
+        secret: bool = False,
+    ) -> ttk.Button:
+        """添加一个带操作按钮的文本输入行。"""
+        row = ttk.Frame(parent)
+        row.pack(fill=X, padx=8, pady=(4, 4))
+        ttk.Label(row, text=label).pack(side=LEFT)
+        ttk.Entry(row, textvariable=var, show="*" if secret else "").pack(side=LEFT, fill=X, expand=True, padx=(8, 8))
+        button = ttk.Button(row, text=button_text, command=command)
+        button.pack(side=LEFT)
+        return button
 
     def _add_option_row(self, parent: ttk.Widget, label: str, var: StringVar, values: list[str]) -> None:
         """添加一个下拉选项行。"""
@@ -571,6 +601,10 @@ class ModManagerApp:
             messagebox.showinfo("没有可检查的 Mod", "请先勾选一个 Mod。")
             return
         self._start_worker("检查汉化情况中...", lambda: self._check_translation_worker(target_mods))
+
+    def _request_nexus_api_key_action(self) -> None:
+        """启动 Nexus SSO 获取 API Key 的流程。"""
+        self._start_worker("获取 Nexus API Key 中...", self._request_nexus_api_key_worker)
 
     def _nexus_update_targets(self) -> list[ManagedMod]:
         """优先返回勾选项；如果没有勾选，则回退到当前选中项。"""
@@ -1130,6 +1164,23 @@ class ModManagerApp:
         finally:
             self._queue.put(WorkerEvent(kind="done"))
 
+    def _request_nexus_api_key_worker(self) -> None:
+        """在线程中执行 Nexus SSO 登录并获取 API Key。"""
+        session = NexusAuthSession()
+        try:
+            self._queue.put(WorkerEvent(kind="log", message="正在打开 Nexus SSO 页面并等待返回 API Key。"))
+            result = session.acquire_api_key()
+            if result.api_key:
+                self._queue.put(WorkerEvent(kind="nexus_key_success", message=result.message, api_key=result.api_key, summary=result.message))
+            else:
+                error_message = result.error or result.message or "无法获取 Nexus API Key。"
+                self._queue.put(WorkerEvent(kind="nexus_key_failure", message=error_message, summary=error_message))
+        except Exception as exc:
+            error_message = f"获取 Nexus API Key 失败：{exc}"
+            self._queue.put(WorkerEvent(kind="nexus_key_failure", message=error_message, summary=error_message))
+        finally:
+            self._queue.put(WorkerEvent(kind="done"))
+
     def _apply_nexus_update_to_record(self, record: ManagedMod, info) -> None:
         """把 Nexus 更新结果写回 Mod 记录。"""
         record.nexus_mod_id = info.mod_id
@@ -1342,6 +1393,7 @@ class ModManagerApp:
         self._check_translation_button.configure(state=action_state if has_checked else "disabled")
         self._check_nexus_updates_button.configure(state=action_state if has_library else "disabled")
         self._download_nexus_updates_button.configure(state=action_state if has_library else "disabled")
+        self._nexus_api_key_button.configure(state=action_state)
         self._translate_button.configure(state=action_state if (ai_ready and has_checked) else "disabled")
         has_visible_records = bool(self._mods_tree.get_children())
         self._select_all_button.configure(state=action_state if has_visible_records else "disabled")
@@ -1406,6 +1458,19 @@ class ModManagerApp:
             self._status_var.set(event.message)
             self._summary_var.set(event.summary or event.message)
             messagebox.showerror("AI 测试失败", event.message)
+        elif event.kind == "nexus_key_success":
+            if event.api_key:
+                self._nexus_api_key_var.set(event.api_key)
+            self._persist_state()
+            self._append_log(event.message)
+            self._status_var.set(event.message)
+            self._summary_var.set(event.summary or event.message)
+            messagebox.showinfo("Nexus API Key 获取成功", event.message)
+        elif event.kind == "nexus_key_failure":
+            self._append_log(event.message)
+            self._status_var.set(event.message)
+            self._summary_var.set(event.summary or event.message)
+            messagebox.showerror("Nexus API Key 获取失败", event.message)
         elif event.kind == "library_scan":
             self._refresh_library_from_event(event.mods)
             self._append_log(event.message)

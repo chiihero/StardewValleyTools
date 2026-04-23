@@ -80,5 +80,6 @@ python app.py
 - 当前只默认支持 OpenAI AI 配置，默认模型为 `gpt-5.4-nano`，`Base URL` 默认值为 `https://api.openai.com/v1`，并保留自定义代理地址兼容中转站；
 - 设置页提供 AI 测试按钮，用于验证当前 API Key / 模型 / Base URL 是否可用；
 - 设置页新增 Nexus API Key，用于 Nexus 更新检查与下载；
+- Nexus API Key 旁边有“获取 API Key”按钮，点击会打开 Nexus SSO 页面并自动回填；
 - 更新包支持 zip，7z 依赖 `py7zr`；
 - 对混合 flat/tree locale 结构和非常规 i18n 布局，当前按保守策略处理为 `unknown` 或不自动支持。
