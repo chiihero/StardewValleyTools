@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import queue
-import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, Tk, filedialog, messagebox, ttk, Text
+from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk, Text
 
 from .manager import deploy_enabled_mods, resolve_game_mods_root, scan_library
 from .models import AppSettings, ManagedMod, ModAnalysis, WorkerEvent
@@ -15,6 +15,8 @@ from .storage import load_state, save_state
 from .translator import translate_with_openai
 from .writers import write_json_file
 
+OPENAI_LABEL = "OpenAI"
+
 IMPORT_POLICY_LABELS = {
     "overwrite": "覆盖",
     "skip": "跳过",
@@ -22,30 +24,75 @@ IMPORT_POLICY_LABELS = {
 }
 IMPORT_POLICY_VALUES = {label: value for value, label in IMPORT_POLICY_LABELS.items()}
 
-OPENAI_LABEL = "OpenAI"
+
+class AIOptionsDialog:
+    def __init__(self, master: Tk, enabled_count: int, provider: str, model: str, api_key_present: bool) -> None:
+        self.result: str | None = None
+        self.window = Toplevel(master)
+        self.window.title("汉化选项")
+        self.window.resizable(False, False)
+        self.window.transient(master)
+        self.window.grab_set()
+
+        self._mode_var = StringVar(value="incremental")
+        outer = ttk.Frame(self.window, padding=14)
+        outer.pack(fill=BOTH, expand=True)
+
+        ttk.Label(outer, text=f"将处理 {enabled_count} 个已启用的 Mod。", foreground="#3a332b").pack(anchor="w")
+        ttk.Label(
+            outer,
+            text=f"AI: {provider} / {model} / {'API Key 已填写' if api_key_present else '将回退环境变量'}",
+            foreground="#655748",
+        ).pack(anchor="w", pady=(4, 10))
+
+        mode_box = ttk.LabelFrame(outer, text="汉化模式")
+        mode_box.pack(fill=X)
+        ttk.Radiobutton(mode_box, text="仅补全缺失", value="incremental", variable=self._mode_var).pack(anchor="w", padx=10, pady=(8, 2))
+        ttk.Radiobutton(mode_box, text="强制汉化", value="force", variable=self._mode_var).pack(anchor="w", padx=10, pady=(0, 8))
+
+        ttk.Label(outer, text="输出仍采用安全生成文件（zh.generated.json），不会直接覆盖原文件。", foreground="#655748").pack(
+            anchor="w", pady=(10, 0)
+        )
+
+        button_row = ttk.Frame(outer)
+        button_row.pack(fill=X, pady=(14, 0))
+        ttk.Button(button_row, text="开始", command=self._start).pack(side=LEFT)
+        ttk.Button(button_row, text="取消", command=self._cancel).pack(side=LEFT, padx=(8, 0))
+
+        self.window.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.window.wait_visibility()
+        self.window.focus_set()
+
+    def show(self) -> str | None:
+        self.window.wait_window()
+        return self.result
+
+    def _start(self) -> None:
+        self.result = self._mode_var.get()
+        self.window.destroy()
+
+    def _cancel(self) -> None:
+        self.result = None
+        self.window.destroy()
 
 
 class ModManagerApp:
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Stardew Valley Mod Manager")
-        self.root.geometry("1220x820")
-        self.root.minsize(980, 680)
+        self.root.geometry("1280x840")
+        self.root.minsize(1020, 700)
 
         self._queue: queue.Queue[WorkerEvent] = queue.Queue()
         self._worker_running = False
-
         self._settings, loaded_mods = load_state()
         self._mods_by_path: dict[str, ManagedMod] = dict(loaded_mods)
-        self._current_analysis: ModAnalysis | None = None
         self._current_selected_path: str | None = None
 
-        self._folder_var = StringVar(value="")
         self._search_var = StringVar(value="")
         self._library_root_var = StringVar(value="")
         self._game_root_var = StringVar(value="")
         self._game_mods_root_var = StringVar(value="")
-        self._ai_folder_var = StringVar(value="")
         self._ai_provider_var = StringVar(value=OPENAI_LABEL)
         self._openai_key_var = StringVar(value="")
         self._openai_model_var = StringVar(value="gpt-4o-mini")
@@ -55,6 +102,10 @@ class ModManagerApp:
         self._translation_enabled_var = BooleanVar(value=True)
         self._tags_var = StringVar(value="")
         self._library_summary_var = StringVar(value="")
+        self._status_var = StringVar(value="Idle")
+        self._progress_var = StringVar(value="0%")
+        self._summary_var = StringVar(value="")
+        self._selected_count_var = StringVar(value="已选择 0 个")
 
         self._sort_column = "display_name"
         self._sort_reverse = False
@@ -66,6 +117,9 @@ class ModManagerApp:
         self._refresh_mod_tree()
         self._sync_button_states()
         self._poll_queue()
+
+        if self._settings.library_root and not self._mods_by_path:
+            self.root.after(250, self._scan_library_action)
 
     def run(self) -> None:
         self.root.mainloop()
@@ -82,7 +136,6 @@ class ModManagerApp:
         style.configure("TLabelframe.Label", background="#f4f1ea", foreground="#3a332b")
         style.configure("TLabel", background="#f4f1ea", foreground="#3a332b")
         style.configure("TButton", padding=(10, 6))
-        style.configure("Accent.TButton", padding=(10, 6))
         style.configure("TEntry", padding=(6, 4))
 
     def _build_ui(self) -> None:
@@ -92,41 +145,32 @@ class ModManagerApp:
         self._notebook = ttk.Notebook(outer)
         self._notebook.pack(fill=BOTH, expand=True)
 
-        self._build_library_tab()
-        self._build_ai_tab()
-        self._build_settings_tab()
+        self._build_management_tab(self._notebook)
+        self._build_settings_tab(self._notebook)
         self._build_log_panel(outer)
+        self._build_progress_panel(outer)
 
         footer = ttk.Frame(outer)
         footer.pack(fill=X, pady=(8, 0))
-        self._status_var = StringVar(value="Idle")
         ttk.Label(footer, textvariable=self._status_var).pack(side=LEFT)
 
-    def _build_library_tab(self) -> None:
-        tab = ttk.Frame(self._notebook, padding=12)
-        self._notebook.add(tab, text="Mod 管理")
+    def _build_management_tab(self, notebook: ttk.Notebook) -> None:
+        tab = ttk.Frame(notebook, padding=12)
+        notebook.add(tab, text="Mod 管理")
 
-        path_box = ttk.LabelFrame(tab, text="Mod 库设置")
-        path_box.pack(fill=X)
+        top = ttk.LabelFrame(tab, text="Mod 库")
+        top.pack(fill=X)
 
-        row = ttk.Frame(path_box)
+        row = ttk.Frame(top)
         row.pack(fill=X, padx=8, pady=(8, 4))
-        ttk.Label(row, text="库目录").pack(side=LEFT)
-        self._library_root_entry = ttk.Entry(row, textvariable=self._library_root_var)
-        self._library_root_entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 8))
-        ttk.Button(row, text="浏览", command=lambda: self._choose_directory(self._library_root_var, "选择 Mod 库目录")).pack(side=LEFT)
-        self._rescan_button = ttk.Button(row, text="重新扫描", command=self._scan_library_action)
-        self._rescan_button.pack(side=LEFT, padx=(8, 0))
-        self._import_button = ttk.Button(row, text="导入启用项", command=self._import_enabled_mods)
-        self._import_button.pack(side=LEFT, padx=(8, 0))
+        self._scan_button = ttk.Button(row, text="重新扫描", command=self._scan_library_action)
+        self._scan_button.pack(side=LEFT)
 
-        search_row = ttk.Frame(path_box)
+        search_row = ttk.Frame(top)
         search_row.pack(fill=X, padx=8, pady=(0, 8))
         ttk.Label(search_row, text="搜索").pack(side=LEFT)
-        search_entry = ttk.Entry(search_row, textvariable=self._search_var)
-        search_entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
-
-        ttk.Label(path_box, textvariable=self._library_summary_var, foreground="#655748").pack(anchor="w", padx=8, pady=(0, 8))
+        ttk.Entry(search_row, textvariable=self._search_var).pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
+        ttk.Label(top, textvariable=self._library_summary_var, foreground="#655748").pack(anchor="w", padx=8, pady=(0, 8))
 
         body = ttk.PanedWindow(tab, orient="horizontal")
         body.pack(fill=BOTH, expand=True, pady=(12, 0))
@@ -140,7 +184,7 @@ class ModManagerApp:
         list_box.pack(fill=BOTH, expand=True)
 
         columns = ("enabled", "display_name", "mod_type", "version", "author", "translation_status", "path")
-        self._mods_tree = ttk.Treeview(list_box, columns=columns, show="headings", selectmode="browse")
+        self._mods_tree = ttk.Treeview(list_box, columns=columns, show="headings", selectmode="extended")
         headings = {
             "enabled": "启用",
             "display_name": "名称",
@@ -155,9 +199,9 @@ class ModManagerApp:
             "display_name": 180,
             "mod_type": 100,
             "version": 90,
-            "author": 140,
-            "translation_status": 100,
-            "path": 320,
+            "author": 150,
+            "translation_status": 110,
+            "path": 340,
         }
         for column in columns:
             self._mods_tree.heading(column, text=headings[column], command=lambda c=column: self._toggle_sort(c))
@@ -165,107 +209,100 @@ class ModManagerApp:
 
         tree_frame = ttk.Frame(list_box)
         tree_frame.pack(fill=BOTH, expand=True, padx=8, pady=(8, 0))
-        tree_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self._mods_tree.yview)
-        tree_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self._mods_tree.xview)
-        self._mods_tree.configure(yscrollcommand=tree_y.set, xscrollcommand=tree_x.set)
-        tree_y.pack(side=RIGHT, fill=Y)
-        self._mods_tree.pack(side=LEFT, fill=BOTH, expand=True)
-        tree_x.pack(side="bottom", fill=X)
+
+        # Use grid inside the frame for stable scrollbar alignment across themes/DPI.
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        y_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self._mods_tree.yview)
+        x_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self._mods_tree.xview)
+        self._mods_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
+        self._mods_tree.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        ttk.Frame(tree_frame).grid(row=1, column=1, sticky="nsew")
+
         self._mods_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        self._mods_tree.bind("<Double-1>", lambda _event: self._toggle_selected_mod())
+        self._mods_tree.bind("<Button-1>", self._on_tree_click)
 
         action_row = ttk.Frame(left)
-        action_row.pack(fill=X, pady=(8, 0))
-        self._enable_button = ttk.Button(action_row, text="启用", command=lambda: self._set_selected_enabled(True))
+        action_row.pack(fill=X, pady=(10, 0))
+        ttk.Label(action_row, textvariable=self._selected_count_var, foreground="#655748").pack(side=LEFT, padx=(0, 8))
+        self._enable_button = ttk.Button(action_row, text="启用所选", command=lambda: self._set_selected_enabled(True))
         self._enable_button.pack(side=LEFT)
-        self._disable_button = ttk.Button(action_row, text="停用", command=lambda: self._set_selected_enabled(False))
+        self._disable_button = ttk.Button(action_row, text="停用所选", command=lambda: self._set_selected_enabled(False))
         self._disable_button.pack(side=LEFT, padx=(8, 0))
-        self._toggle_button = ttk.Button(action_row, text="切换状态", command=self._toggle_selected_mod)
-        self._toggle_button.pack(side=LEFT, padx=(8, 0))
-        self._apply_metadata_button = ttk.Button(action_row, text="保存备注", command=self._apply_selected_metadata)
-        self._apply_metadata_button.pack(side=LEFT, padx=(8, 0))
+        self._select_all_button = ttk.Button(action_row, text="全选", command=self._select_all_mods)
+        self._select_all_button.pack(side=LEFT, padx=(8, 0))
+        self._clear_selection_button = ttk.Button(action_row, text="清空选择", command=self._clear_selection)
+        self._clear_selection_button.pack(side=LEFT, padx=(8, 0))
+        self._invert_selection_button = ttk.Button(action_row, text="反选", command=self._invert_selection)
+        self._invert_selection_button.pack(side=LEFT, padx=(8, 0))
+        self._translate_button = ttk.Button(action_row, text="汉化", command=self._translate_enabled_action)
+        self._translate_button.pack(side=LEFT, padx=(8, 0))
+        self._import_enabled_button = ttk.Button(action_row, text="导入启用项", command=self._import_enabled_action)
+        self._import_enabled_button.pack(side=LEFT, padx=(8, 0))
+
+        ttk.Label(
+            left,
+            text="提示：点击“启用”列切换状态；汉化优先处理选中项（未选择则处理已启用）；导入只导入已启用。",
+            foreground="#655748",
+        ).pack(anchor="w", pady=(8, 0))
 
         detail_box = ttk.LabelFrame(right, text="详情")
         detail_box.pack(fill=BOTH, expand=True)
-        self._detail_text = Text(detail_box, height=18, wrap="word", borderwidth=0, background="#fffdf8", foreground="#2f2922")
-        self._detail_text.pack(fill=BOTH, expand=True, padx=8, pady=8)
+        self._detail_text = Text(detail_box, height=16, wrap="word", borderwidth=0, background="#fffdf8", foreground="#2f2922")
+        self._detail_text.pack(fill=BOTH, expand=True, padx=8, pady=(8, 4))
         self._detail_text.configure(state="disabled")
 
         meta_box = ttk.LabelFrame(right, text="标签 / 备注")
         meta_box.pack(fill=BOTH, expand=False, pady=(10, 0))
-
-        tags_row = ttk.Frame(meta_box)
-        tags_row.pack(fill=X, padx=8, pady=(8, 4))
-        ttk.Label(tags_row, text="标签").pack(side=LEFT)
-        self._tags_entry = ttk.Entry(tags_row, textvariable=self._tags_var)
-        self._tags_entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
-
+        meta_row = ttk.Frame(meta_box)
+        meta_row.pack(fill=X, padx=8, pady=(8, 4))
+        ttk.Label(meta_row, text="标签").pack(side=LEFT)
+        ttk.Entry(meta_row, textvariable=self._tags_var).pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
         ttk.Label(meta_box, text="备注").pack(anchor="w", padx=8, pady=(4, 0))
         self._notes_text = Text(meta_box, height=6, wrap="word", borderwidth=0, background="#fffdf8", foreground="#2f2922")
         self._notes_text.pack(fill=BOTH, expand=True, padx=8, pady=(4, 8))
 
-        ttk.Label(tab, text="提示：启用 / 停用只修改记录，不会直接改游戏目录。导入时才复制到游戏 Mods。", foreground="#655748").pack(anchor="w", pady=(8, 0))
+        meta_button_row = ttk.Frame(right)
+        meta_button_row.pack(fill=X, pady=(8, 0))
+        self._save_meta_button = ttk.Button(meta_button_row, text="保存备注", command=self._save_selected_metadata)
+        self._save_meta_button.pack(side=LEFT)
 
-    def _build_ai_tab(self) -> None:
-        tab = ttk.Frame(self._notebook, padding=12)
-        self._notebook.add(tab, text="AI 汉化")
-
-        top = ttk.LabelFrame(tab, text="汉化目标")
-        top.pack(fill=X)
-
-        row = ttk.Frame(top)
-        row.pack(fill=X, padx=8, pady=(8, 4))
-        ttk.Label(row, text="文件夹").pack(side=LEFT)
-        self._ai_folder_entry = ttk.Entry(row, textvariable=self._ai_folder_var)
-        self._ai_folder_entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 8))
-        ttk.Button(row, text="浏览", command=lambda: self._choose_directory(self._ai_folder_var, "选择要汉化的 Mod 文件夹")).pack(side=LEFT)
-        ttk.Button(row, text="使用选中 Mod", command=self._use_selected_mod_for_ai).pack(side=LEFT, padx=(8, 0))
-
-        action_row = ttk.Frame(top)
-        action_row.pack(fill=X, padx=8, pady=(0, 8))
-        self._ai_scan_button = ttk.Button(action_row, text="扫描", command=self._scan_ai_target)
-        self._ai_scan_button.pack(side=LEFT)
-        self._ai_generate_button = ttk.Button(action_row, text="生成中文", command=self._generate_ai_translation)
-        self._ai_generate_button.pack(side=LEFT, padx=(8, 0))
-
-        info_box = ttk.LabelFrame(tab, text="汉化状态")
-        info_box.pack(fill=BOTH, expand=True, pady=(12, 0))
-        self._ai_summary_text = Text(info_box, height=20, wrap="word", borderwidth=0, background="#fffdf8", foreground="#2f2922")
-        self._ai_summary_text.pack(fill=BOTH, expand=True, padx=8, pady=8)
-        self._ai_summary_text.configure(state="disabled")
-
-    def _build_settings_tab(self) -> None:
-        tab = ttk.Frame(self._notebook, padding=12)
-        self._notebook.add(tab, text="设置")
+    def _build_settings_tab(self, notebook: ttk.Notebook) -> None:
+        tab = ttk.Frame(notebook, padding=12)
+        self._settings_tab = tab
+        notebook.add(tab, text="设置")
 
         paths_box = ttk.LabelFrame(tab, text="路径")
         paths_box.pack(fill=X)
-        self._build_path_field(paths_box, "Mod 库目录", self._library_root_var, "选择 Mod 库目录")
-        self._build_path_field(paths_box, "游戏目录", self._game_root_var, "选择游戏目录")
-        self._build_path_field(paths_box, "游戏 Mods 目录", self._game_mods_root_var, "选择游戏 Mods 目录")
+        self._add_path_row(paths_box, "Mod 库目录", self._library_root_var, "选择 Mod 库目录")
+        self._add_path_row(paths_box, "游戏目录", self._game_root_var, "选择游戏目录")
+        self._add_path_row(paths_box, "游戏 Mods 目录", self._game_mods_root_var, "选择游戏 Mods 目录")
 
         ai_box = ttk.LabelFrame(tab, text="AI")
         ai_box.pack(fill=X, pady=(12, 0))
+        ai_row = ttk.Frame(ai_box)
+        ai_row.pack(fill=X, padx=8, pady=(8, 4))
+        ttk.Checkbutton(ai_row, text="启用 AI", variable=self._ai_enabled_var).pack(side=LEFT)
+        ttk.Checkbutton(ai_row, text="启用汉化功能", variable=self._translation_enabled_var).pack(side=LEFT, padx=(12, 0))
 
-        row = ttk.Frame(ai_box)
-        row.pack(fill=X, padx=8, pady=(8, 4))
-        ttk.Checkbutton(row, text="启用 AI", variable=self._ai_enabled_var).pack(side=LEFT)
-        ttk.Checkbutton(row, text="启用汉化功能", variable=self._translation_enabled_var).pack(side=LEFT, padx=(12, 0))
-
-        self._build_option_field(ai_box, "Provider", self._ai_provider_var, [OPENAI_LABEL])
-        self._build_text_field(ai_box, "API Key", self._openai_key_var, secret=True)
-        self._build_text_field(ai_box, "模型", self._openai_model_var)
-        self._build_text_field(ai_box, "Base URL", self._openai_base_url_var)
+        self._add_option_row(ai_box, "Provider", self._ai_provider_var, [OPENAI_LABEL])
+        self._add_text_row(ai_box, "API Key", self._openai_key_var, secret=True)
+        self._add_text_row(ai_box, "模型", self._openai_model_var)
+        self._add_text_row(ai_box, "Base URL", self._openai_base_url_var)
 
         import_box = ttk.LabelFrame(tab, text="导入")
         import_box.pack(fill=X, pady=(12, 0))
-        self._build_option_field(import_box, "导入策略", self._import_policy_var, list(IMPORT_POLICY_LABELS.values()))
+        self._add_option_row(import_box, "导入策略", self._import_policy_var, list(IMPORT_POLICY_LABELS.values()))
 
         button_row = ttk.Frame(tab)
         button_row.pack(fill=X, pady=(12, 0))
         self._save_settings_button = ttk.Button(button_row, text="保存设置", command=self._save_settings_action)
         self._save_settings_button.pack(side=LEFT)
-        ttk.Label(button_row, text="保存后会写入本地状态文件，并用于导入与 AI 汉化。", foreground="#655748").pack(side=LEFT, padx=(12, 0))
+        ttk.Label(button_row, text="保存后会写入本地状态文件。", foreground="#655748").pack(side=LEFT, padx=(12, 0))
 
     def _build_log_panel(self, outer: ttk.Frame) -> None:
         log_box = ttk.LabelFrame(outer, text="日志")
@@ -274,27 +311,32 @@ class ModManagerApp:
         self._log_text.pack(fill=BOTH, expand=True, padx=8, pady=8)
         self._log_text.configure(state="disabled")
 
-    def _build_path_field(self, parent: ttk.Widget, label: str, var: StringVar, title: str) -> None:
+    def _build_progress_panel(self, outer: ttk.Frame) -> None:
+        panel = ttk.Frame(outer)
+        panel.pack(fill=X, pady=(8, 0))
+        self._progress_bar = ttk.Progressbar(panel, mode="determinate", maximum=100)
+        self._progress_bar.pack(side=LEFT, fill=X, expand=True)
+        ttk.Label(panel, textvariable=self._progress_var, width=8, anchor="e").pack(side=LEFT, padx=(8, 0))
+        ttk.Label(panel, textvariable=self._summary_var, foreground="#655748").pack(side=LEFT, padx=(12, 0))
+
+    def _add_path_row(self, parent: ttk.Widget, label: str, var: StringVar, title: str) -> None:
         row = ttk.Frame(parent)
         row.pack(fill=X, padx=8, pady=(8, 4))
         ttk.Label(row, text=label).pack(side=LEFT)
-        entry = ttk.Entry(row, textvariable=var)
-        entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 8))
+        ttk.Entry(row, textvariable=var).pack(side=LEFT, fill=X, expand=True, padx=(8, 8))
         ttk.Button(row, text="浏览", command=lambda: self._choose_directory(var, title)).pack(side=LEFT)
 
-    def _build_text_field(self, parent: ttk.Widget, label: str, var: StringVar, secret: bool = False) -> None:
+    def _add_text_row(self, parent: ttk.Widget, label: str, var: StringVar, secret: bool = False) -> None:
         row = ttk.Frame(parent)
         row.pack(fill=X, padx=8, pady=(4, 4))
         ttk.Label(row, text=label).pack(side=LEFT)
-        entry = ttk.Entry(row, textvariable=var, show="*" if secret else "")
-        entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
+        ttk.Entry(row, textvariable=var, show="*" if secret else "").pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
 
-    def _build_option_field(self, parent: ttk.Widget, label: str, var: StringVar, options: list[str]) -> None:
+    def _add_option_row(self, parent: ttk.Widget, label: str, var: StringVar, values: list[str]) -> None:
         row = ttk.Frame(parent)
         row.pack(fill=X, padx=8, pady=(4, 4))
         ttk.Label(row, text=label).pack(side=LEFT)
-        combo = ttk.Combobox(row, textvariable=var, values=options, state="readonly")
-        combo.pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
+        ttk.Combobox(row, textvariable=var, values=values, state="readonly").pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
 
     def _apply_settings_to_form(self, settings: AppSettings) -> None:
         self._library_root_var.set(str(settings.library_root) if settings.library_root else "")
@@ -309,36 +351,39 @@ class ModManagerApp:
         self._import_policy_var.set(IMPORT_POLICY_LABELS.get(settings.import_policy, IMPORT_POLICY_LABELS["overwrite"]))
 
     def _collect_settings_from_form(self) -> AppSettings:
-        library_root = self._parse_path(self._library_root_var.get())
-        game_root = self._parse_path(self._game_root_var.get())
-        game_mods_root = self._parse_path(self._game_mods_root_var.get())
-        policy = IMPORT_POLICY_VALUES.get(self._import_policy_var.get(), "overwrite")
-        provider = "openai"
         return AppSettings(
-            library_root=library_root,
-            game_root=game_root,
-            game_mods_root=game_mods_root,
+            library_root=self._parse_path(self._library_root_var.get()),
+            game_root=self._parse_path(self._game_root_var.get()),
+            game_mods_root=self._parse_path(self._game_mods_root_var.get()),
             ai_enabled=bool(self._ai_enabled_var.get()),
-            ai_provider=provider,
+            ai_provider="openai",
             openai_api_key=self._openai_key_var.get().strip(),
             openai_model=self._openai_model_var.get().strip() or "gpt-4o-mini",
             openai_base_url=self._openai_base_url_var.get().strip(),
             translation_enabled=bool(self._translation_enabled_var.get()),
-            import_policy=policy,
+            import_policy=IMPORT_POLICY_VALUES.get(self._import_policy_var.get(), "overwrite"),
         )
 
     def _parse_path(self, value: str) -> Path | None:
         text = value.strip()
         return Path(text).expanduser() if text else None
 
-    def _persist_state(self) -> None:
-        save_state(self._settings, self._mods_by_path)
-
     def _choose_directory(self, var: StringVar, title: str) -> None:
         selected = filedialog.askdirectory(title=title)
         if selected:
             var.set(selected)
             self._sync_button_states()
+
+    def _open_settings_tab(self) -> None:
+        tab = getattr(self, "_settings_tab", None)
+        notebook = getattr(self, "_notebook", None)
+        if notebook is None or tab is None:
+            return
+        notebook.select(tab)
+
+    def _persist_state(self) -> None:
+        self._settings = self._collect_settings_from_form()
+        save_state(self._settings, self._mods_by_path)
 
     def _save_settings_action(self) -> None:
         previous_library = self._settings.library_root
@@ -354,20 +399,27 @@ class ModManagerApp:
         self._settings = self._collect_settings_from_form()
         self._persist_state()
         if self._settings.library_root is None:
-            messagebox.showwarning("Mod 库目录未设置", "请先在设置页或顶部选择 Mod 库目录。")
+            answer = messagebox.askyesno("Mod 库目录未设置", "请先在设置页设置 Mod 库目录。现在打开设置吗？")
+            if answer:
+                self._open_settings_tab()
             return
         self._start_worker("扫描 Mod 库中...", lambda: self._scan_library_worker(self._settings.library_root, dict(self._mods_by_path)))
 
     def _scan_library_worker(self, library_root: Path, existing_records: dict[str, ManagedMod]) -> None:
         try:
             records = scan_library(library_root, existing_records)
-            self._queue.put(WorkerEvent(kind="library_scan", mods=records, message=f"Scanned {len(records)} mods"))
+            self._queue.put(WorkerEvent(kind="library_scan", mods=records, message=f"已扫描 {len(records)} 个 Mod"))
         except Exception as exc:
             self._queue.put(WorkerEvent(kind="error", message=f"Library scan failed: {exc}"))
         finally:
             self._queue.put(WorkerEvent(kind="done"))
 
-    def _import_enabled_mods(self) -> None:
+    def _refresh_library_from_event(self, records: list[ManagedMod]) -> None:
+        self._mods_by_path = {str(record.source_path.resolve()): record for record in records}
+        self._persist_state()
+        self._refresh_mod_tree()
+
+    def _import_enabled_action(self) -> None:
         self._settings = self._collect_settings_from_form()
         self._persist_state()
         game_mods_root = resolve_game_mods_root(self._settings)
@@ -375,7 +427,7 @@ class ModManagerApp:
             messagebox.showwarning("Mods 路径未设置", "请先在设置页设置游戏目录或游戏 Mods 目录。")
             return
 
-        enabled_mods = [record for record in self._mods_by_path.values() if record.enabled]
+        enabled_mods = self._enabled_records()
         if not enabled_mods:
             messagebox.showinfo("没有启用项", "当前没有任何启用的 Mod 可导入。")
             return
@@ -401,75 +453,98 @@ class ModManagerApp:
 
     def _import_worker(self, enabled_mods: list[ManagedMod], game_mods_root: Path, policy: str) -> None:
         try:
-            report = deploy_enabled_mods(enabled_mods, game_mods_root, policy=policy)
-            summary = (
-                f"Import complete: copied {len(report.copied)}, skipped {len(report.skipped)}, failed {len(report.failed)}"
+            self._queue.put(WorkerEvent(kind="log", message=f"开始导入 {len(enabled_mods)} 个 Mod。"))
+            report = deploy_enabled_mods(
+                enabled_mods,
+                game_mods_root,
+                policy=policy,
+                progress_callback=lambda index, total, record, phase: self._queue.put(
+                    WorkerEvent(
+                        kind="progress",
+                        progress=index,
+                        total=total,
+                        message=f"{record.display_name or record.source_path.name}：{phase}",
+                    )
+                ),
             )
-            self._queue.put(WorkerEvent(kind="import", import_report=report, message=summary))
+            summary = f"导入完成：复制 {len(report.copied)}，跳过 {len(report.skipped)}，失败 {len(report.failed)}。"
+            self._queue.put(WorkerEvent(kind="summary", summary=summary, message=summary))
+            for path in report.copied:
+                self._queue.put(WorkerEvent(kind="log", message=f"已复制：{path}"))
+            for path in report.skipped:
+                self._queue.put(WorkerEvent(kind="log", message=f"已跳过：{path}"))
+            for path, error in report.failed:
+                self._queue.put(WorkerEvent(kind="log", message=f"复制失败：{path} -> {error}"))
         except Exception as exc:
             self._queue.put(WorkerEvent(kind="error", message=f"Import failed: {exc}"))
         finally:
             self._queue.put(WorkerEvent(kind="done"))
 
-    def _use_selected_mod_for_ai(self) -> None:
-        record = self._selected_record()
-        if record is None:
-            messagebox.showinfo("未选择 Mod", "请先在 Mod 列表中选择一个 Mod。")
-            return
-        self._ai_folder_var.set(str(record.source_path))
-        self._current_analysis = record.analysis
-        if record.analysis is not None:
-            self._render_analysis(record.analysis, target="ai")
-        else:
-            self._set_text(self._ai_summary_text, self._render_record_summary(record))
-        self._sync_button_states()
-
-    def _scan_ai_target(self) -> None:
-        target = self._parse_path(self._ai_folder_var.get())
-        if target is None:
-            messagebox.showwarning("未选择文件夹", "请先选择要汉化的 Mod 文件夹。")
-            return
-        self._start_worker("扫描汉化目标中...", lambda: self._scan_ai_worker(target))
-
-    def _scan_ai_worker(self, folder: Path) -> None:
-        try:
-            analysis = scan_mod(folder)
-            self._queue.put(WorkerEvent(kind="analysis", analysis=analysis, message="AI scan complete"))
-        except Exception as exc:
-            self._queue.put(WorkerEvent(kind="error", message=f"AI scan failed: {exc}"))
-        finally:
-            self._queue.put(WorkerEvent(kind="done"))
-
-    def _generate_ai_translation(self) -> None:
+    def _translate_enabled_action(self) -> None:
         self._settings = self._collect_settings_from_form()
         if not self._settings.ai_enabled or not self._settings.translation_enabled:
             messagebox.showwarning("AI 未启用", "请先在设置页启用 AI 和汉化功能。")
             return
-        target = self._parse_path(self._ai_folder_var.get())
-        if target is None:
-            messagebox.showwarning("未选择文件夹", "请先选择要汉化的 Mod 文件夹。")
-            return
-        self._persist_state()
-        self._start_worker("调用 AI 生成中文中...", lambda: self._translate_worker(target))
 
-    def _translate_worker(self, folder: Path) -> None:
-        try:
-            analysis = scan_mod(folder)
-            self._queue.put(WorkerEvent(kind="analysis", analysis=analysis, message="Scanned target for translation"))
-            result = translate_with_openai(
-                analysis,
-                api_key=self._settings.openai_api_key or None,
-                model=self._settings.openai_model or None,
-                base_url=self._settings.openai_base_url or None,
-            )
-            written = write_json_file(result.output_path, result.payload, source_payload=self._build_validation_source(analysis))
-            self._queue.put(WorkerEvent(kind="log", message=f"Wrote {written}"))
-            self._queue.put(WorkerEvent(kind="log", message=f"Source files: {', '.join(str(path) for path in result.source_paths)}"))
-            self._queue.put(WorkerEvent(kind="analysis", analysis=analysis, message=f"Translation complete: {written}"))
-        except Exception as exc:
-            self._queue.put(WorkerEvent(kind="error", message=f"Translation failed: {exc}"))
-        finally:
-            self._queue.put(WorkerEvent(kind="done"))
+        target_mods = self._records_for_batch_action()
+        if not target_mods:
+            messagebox.showinfo("没有启用项", "请先启用至少一个 Mod。")
+            return
+
+        dialog = AIOptionsDialog(
+            self.root,
+            len(target_mods),
+            self._settings.ai_provider,
+            self._settings.openai_model,
+            bool(self._settings.openai_api_key.strip()),
+        )
+        mode = dialog.show()
+        if mode is None:
+            return
+
+        self._persist_state()
+        self._start_worker("汉化处理中...", lambda: self._translate_worker(target_mods, mode))
+
+    def _translate_worker(self, records: list[ManagedMod], mode: str) -> None:
+        total = len(records)
+        success = 0
+        skipped = 0
+        failed = 0
+        ordered = sorted(records, key=lambda item: item.display_name.lower())
+
+        for index, record in enumerate(ordered, start=1):
+            display_name = record.display_name or record.source_path.name
+            try:
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：扫描中"))
+                analysis = record.analysis or scan_mod(record.source_path)
+                self._apply_analysis_to_record(record, analysis)
+
+                if mode != "force" and analysis.has_chinese and analysis.translation_status == "translated":
+                    skipped += 1
+                    self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：已汉化，跳过"))
+                else:
+                    self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：调用 AI 生成中"))
+                    result = translate_with_openai(
+                        analysis,
+                        api_key=self._settings.openai_api_key or None,
+                        model=self._settings.openai_model or None,
+                        base_url=self._settings.openai_base_url or None,
+                    )
+                    written = write_json_file(result.output_path, result.payload, source_payload=self._build_validation_source(analysis))
+                    refreshed = scan_mod(record.source_path)
+                    self._apply_analysis_to_record(record, refreshed)
+                    self._persist_state()
+                    success += 1
+                    self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：已写入 {written}"))
+            except Exception as exc:
+                failed += 1
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：失败 -> {exc}"))
+            finally:
+                self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"已完成 {index}/{total}"))
+
+        summary = f"汉化完成：成功 {success}，跳过 {skipped}，失败 {failed}。"
+        self._queue.put(WorkerEvent(kind="summary", summary=summary, message=summary))
+        self._queue.put(WorkerEvent(kind="log", message=summary))
 
     def _build_validation_source(self, analysis: ModAnalysis):
         if not analysis.translatable_sources:
@@ -492,69 +567,28 @@ class ModManagerApp:
         with path.open("r", encoding="utf-8-sig") as handle:
             return json.load(handle)
 
-    def _start_worker(self, status: str, target: Callable[[], None]) -> None:
-        if self._worker_running:
-            self._append_log("A task is already running.")
-            return
-        self._worker_running = True
-        self._status_var.set(status)
-        self._sync_button_states()
-        thread = threading.Thread(target=target, daemon=True)
-        thread.start()
-
-    def _poll_queue(self) -> None:
-        processed = False
-        while True:
-            try:
-                event = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            processed = True
-            self._handle_event(event)
-        if processed:
-            self.root.update_idletasks()
-        self.root.after(100, self._poll_queue)
-
-    def _handle_event(self, event: WorkerEvent) -> None:
-        if event.kind == "log":
-            self._append_log(event.message)
-            self._status_var.set(event.message)
-        elif event.kind == "library_scan":
-            self._mods_by_path = {str(record.source_path.resolve()): record for record in event.mods}
-            self._persist_state()
-            self._refresh_mod_tree()
-            self._append_log(event.message)
-            self._status_var.set(event.message or "Library scan complete")
-        elif event.kind == "analysis" and event.analysis is not None:
-            self._current_analysis = event.analysis
-            self._render_analysis(event.analysis, target="ai")
-            if event.message:
-                self._append_log(event.message)
-                self._status_var.set(event.message)
-        elif event.kind == "import" and event.import_report is not None:
-            self._append_log(event.message)
-            for path in event.import_report.copied:
-                self._append_log(f"Copied: {path}")
-            for path in event.import_report.skipped:
-                self._append_log(f"Skipped: {path}")
-            for path, error in event.import_report.failed:
-                self._append_log(f"Failed: {path} -> {error}")
-            self._status_var.set(event.message)
-        elif event.kind == "error":
-            self._append_log(event.message)
-            self._status_var.set(event.message)
-        elif event.kind == "done":
-            self._worker_running = False
-            self._sync_button_states()
-            if self._status_var.get() in {"Scanning Mod 库中...", "扫描汉化目标中...", "调用 AI 生成中文中...", "导入启用的 Mod 中..."}:
-                self._status_var.set("Idle")
+    def _apply_analysis_to_record(self, record: ManagedMod, analysis: ModAnalysis) -> None:
+        record.display_name = analysis.mod_name
+        record.author = analysis.manifest.author if analysis.manifest is not None else None
+        record.version = analysis.manifest.version if analysis.manifest is not None else None
+        record.unique_id = analysis.manifest.unique_id if analysis.manifest is not None else None
+        record.mod_type = analysis.mod_type
+        record.translation_status = analysis.translation_status
+        record.has_chinese = analysis.has_chinese
+        record.missing_keys_count = analysis.missing_keys_count
+        record.has_manifest = analysis.has_manifest
+        record.manifest_path = analysis.manifest_path
+        record.last_scanned = datetime.now().isoformat(timespec="seconds")
+        record.warnings = list(analysis.warnings)
+        record.analysis = analysis
 
     def _refresh_mod_tree(self) -> None:
+        selected = self._mods_tree.selection()[0] if self._mods_tree.selection() else None
         self._mods_tree.delete(*self._mods_tree.get_children())
-        selected = self._current_selected_path
-        records = list(self._mods_by_path.values())
-        records = [record for record in records if self._matches_filter(record)]
+
+        records = [record for record in self._mods_by_path.values() if self._matches_filter(record)]
         records.sort(key=self._sort_key, reverse=self._sort_reverse)
+
         for record in records:
             iid = str(record.source_path.resolve())
             self._mods_tree.insert(
@@ -562,7 +596,7 @@ class ModManagerApp:
                 END,
                 iid=iid,
                 values=(
-                    "✓" if record.enabled else "",
+                    "☑" if record.enabled else "☐",
                     record.display_name or record.source_path.name,
                     record.mod_type,
                     record.version or "",
@@ -571,11 +605,16 @@ class ModManagerApp:
                     str(record.source_path),
                 ),
             )
+
         if selected and self._mods_tree.exists(selected):
             self._mods_tree.selection_set(selected)
             self._mods_tree.see(selected)
+            self._show_record_details(self._mods_by_path.get(selected))
+        else:
+            self._clear_record_details()
+
         self._update_library_summary()
-        self._update_detail_panel()
+        self._update_selection_summary()
         self._sync_button_states()
 
     def _matches_filter(self, record: ManagedMod) -> bool:
@@ -588,9 +627,9 @@ class ModManagerApp:
                 record.author or "",
                 record.version or "",
                 record.unique_id or "",
-                str(record.source_path),
                 record.mod_type,
                 record.translation_status,
+                str(record.source_path),
                 " ".join(record.tags),
                 record.notes,
             ]
@@ -617,94 +656,118 @@ class ModManagerApp:
             self._sort_reverse = False
         self._refresh_mod_tree()
 
-    def _selected_record(self, populate_metadata: bool = False) -> ManagedMod | None:
+    def _select_all_mods(self) -> None:
+        self._mods_tree.selection_set(self._mods_tree.get_children())
+        self._update_selection_summary()
+
+    def _clear_selection(self) -> None:
+        self._mods_tree.selection_remove(self._mods_tree.selection())
+        self._update_selection_summary()
+
+    def _invert_selection(self) -> None:
+        current = set(self._mods_tree.selection())
+        all_items = list(self._mods_tree.get_children())
+        self._mods_tree.selection_set([item for item in all_items if item not in current])
+        self._update_selection_summary()
+
+    def _on_tree_click(self, event) -> str | None:
+        if self._mods_tree.identify_region(event.x, event.y) != "cell":
+            return None
+        if self._mods_tree.identify_column(event.x) != "#1":
+            return None
+        iid = self._mods_tree.identify_row(event.y)
+        if not iid:
+            return None
+
+        record = self._mods_by_path.get(iid)
+        if record is None:
+            return None
+
+        record.enabled = not record.enabled
+        self._persist_state()
+        self._refresh_mod_tree()
+        self._mods_tree.selection_set(iid)
+        return "break"
+
+    def _on_tree_select(self, _event: object) -> None:
+        selection = self._mods_tree.selection()
+        self._update_selection_summary()
+        if not selection:
+            self._current_selected_path = None
+            self._clear_record_details()
+            return
+        key = selection[0]
+        self._current_selected_path = key
+        self._show_record_details(self._mods_by_path.get(key))
+
+    def _selected_record(self) -> ManagedMod | None:
         selection = self._mods_tree.selection()
         if not selection:
             return None
-        key = selection[0]
-        self._current_selected_path = key
-        record = self._mods_by_path.get(key)
-        if record is not None and populate_metadata:
-            self._fill_metadata_fields(record)
-        return record
+        return self._mods_by_path.get(selection[0])
 
-    def _on_tree_select(self, _event: object) -> None:
-        record = self._selected_record(populate_metadata=True)
-        if record is None:
-            self._clear_metadata_fields()
-            self._update_detail_panel()
-            return
-        self._ai_folder_var.set(str(record.source_path))
-        if record.analysis is not None:
-            self._current_analysis = record.analysis
-            self._render_analysis(record.analysis, target="library")
-        else:
-            self._set_text(self._detail_text, self._render_record_summary(record))
-        self._sync_button_states()
+    def _selected_records(self) -> list[ManagedMod]:
+        return [self._mods_by_path[iid] for iid in self._mods_tree.selection() if iid in self._mods_by_path]
+
+    def _update_selection_summary(self) -> None:
+        count = len(self._mods_tree.selection())
+        self._selected_count_var.set(f"已选择 {count} 个")
+        self._update_library_summary()
+
+    def _enabled_records(self) -> list[ManagedMod]:
+        return [record for record in self._mods_by_path.values() if record.enabled]
+
+    def _records_for_batch_action(self) -> list[ManagedMod]:
+        selected = self._selected_records()
+        return selected if selected else self._enabled_records()
 
     def _set_selected_enabled(self, enabled: bool) -> None:
+        records = self._selected_records()
+        if not records:
+            messagebox.showinfo("未选择 Mod", "请先选择一个 Mod。")
+            return
+        for record in records:
+            record.enabled = enabled
+        self._persist_state()
+        self._refresh_mod_tree()
+
+    def _save_selected_metadata(self) -> None:
         record = self._selected_record()
         if record is None:
             messagebox.showinfo("未选择 Mod", "请先选择一个 Mod。")
             return
-        record.enabled = enabled
+
+        tags = [item.strip() for item in self._tags_var.get().replace("；", ";").split(";") if item.strip()]
+        if len(tags) == 1 and "," in tags[0]:
+            tags = [item.strip() for item in tags[0].split(",") if item.strip()]
+        record.tags = tags
+        record.notes = self._notes_text.get("1.0", END).strip()
         self._persist_state()
         self._refresh_mod_tree()
+        self._append_log(f"已保存元数据：{record.display_name or record.source_path.name}")
 
-    def _toggle_selected_mod(self) -> None:
-        record = self._selected_record()
+    def _show_record_details(self, record: ManagedMod | None) -> None:
         if record is None:
+            self._clear_record_details()
             return
-        self._set_selected_enabled(not record.enabled)
-
-    def _fill_metadata_fields(self, record: ManagedMod) -> None:
         self._tags_var.set(", ".join(record.tags))
         self._notes_text.configure(state="normal")
         self._notes_text.delete("1.0", END)
         self._notes_text.insert("1.0", record.notes)
         self._notes_text.configure(state="normal")
+        self._set_text(self._detail_text, self._render_record_summary(record))
 
-    def _clear_metadata_fields(self) -> None:
+    def _clear_record_details(self) -> None:
         self._tags_var.set("")
         self._notes_text.configure(state="normal")
         self._notes_text.delete("1.0", END)
         self._notes_text.configure(state="normal")
-
-    def _apply_selected_metadata(self) -> None:
-        record = self._selected_record()
-        if record is None:
-            messagebox.showinfo("未选择 Mod", "请先选择一个 Mod。")
-            return
-        tags = [item.strip() for item in re.split(r"[;,]", self._tags_var.get()) if item.strip()]
-        notes = self._notes_text.get("1.0", END).strip()
-        record.tags = tags
-        record.notes = notes
-        self._persist_state()
-        self._refresh_mod_tree()
-        self._append_log(f"Updated metadata for {record.display_name or record.source_path.name}")
-
-    def _update_library_summary(self) -> None:
-        total = len(self._mods_by_path)
-        enabled = sum(1 for record in self._mods_by_path.values() if record.enabled)
-        library_root = self._settings.library_root or self._parse_path(self._library_root_var.get())
-        summary = [f"总数：{total}", f"启用：{enabled}"]
-        if library_root is not None:
-            summary.append(f"库目录：{library_root}")
-        if hasattr(self, "_library_summary_var"):
-            self._library_summary_var.set(" | ".join(summary))
-
-    def _update_detail_panel(self) -> None:
-        record = self._selected_record()
-        if record is None:
-            self._set_text(self._detail_text, "选择一个 Mod 查看详情。")
-            self._clear_metadata_fields()
-            return
-        self._set_text(self._detail_text, self._render_record_summary(record))
+        self._set_text(self._detail_text, "选择一个 Mod 查看详情。")
 
     def _render_record_summary(self, record: ManagedMod) -> str:
         lines = [
             f"Folder: {record.source_path}",
-            f"Enabled: {'yes' if record.enabled else 'no'}", 
+            f"Enabled: {'yes' if record.enabled else 'no'}",
             f"Name: {record.display_name or record.source_path.name}",
             f"Author: {record.author or 'n/a'}",
             f"Version: {record.version or 'n/a'}",
@@ -721,63 +784,190 @@ class ModManagerApp:
         if record.warnings:
             lines.append("Warnings:")
             lines.extend(f"- {warning}" for warning in record.warnings)
-        if record.analysis is not None and record.analysis.manifest_hints:
-            lines.append("Manifest hints: " + ", ".join(record.analysis.manifest_hints))
         return "\n".join(lines)
 
-    def _render_analysis(self, analysis: ModAnalysis, target: str) -> None:
-        lines = [
-            f"Folder: {analysis.mod_path}",
-            f"Mod name: {analysis.mod_name}",
-            f"Manifest: {'found' if analysis.has_manifest else 'missing'}",
-            f"Manifest path: {analysis.manifest_path or 'n/a'}",
-            f"Mod type: {analysis.mod_type}",
-            f"Translation status: {analysis.translation_status}",
-            f"Chinese present: {'yes' if analysis.has_chinese else 'no'}",
-            f"Default locale: {analysis.default_locale_path or 'n/a'}",
-            f"Chinese locale: {analysis.zh_locale_path or 'n/a'}",
-            f"Missing keys: {analysis.missing_keys_count}",
-            f"Translatable sources: {', '.join(str(path) for path in analysis.translatable_sources) or 'n/a'}",
-        ]
-        if analysis.manifest is not None:
-            lines.extend(
-                [
-                    f"Author: {analysis.manifest.author or 'n/a'}",
-                    f"Version: {analysis.manifest.version or 'n/a'}",
-                    f"UniqueID: {analysis.manifest.unique_id or 'n/a'}",
-                ]
-            )
-        if analysis.manifest_hints:
-            lines.append("Manifest hints: " + ", ".join(analysis.manifest_hints))
-        if analysis.warnings:
-            lines.append("Warnings:")
-            lines.extend(f"- {warning}" for warning in analysis.warnings)
-        if target == "ai":
-            self._set_text(self._ai_summary_text, "\n".join(lines))
-        else:
-            self._set_text(self._detail_text, "\n".join(lines))
+    def _update_library_summary(self) -> None:
+        total = len(self._mods_by_path)
+        enabled = sum(1 for record in self._mods_by_path.values() if record.enabled)
+        summary = [f"总数：{total}", f"已启用：{enabled}", f"已选择：{len(self._mods_tree.selection())}"]
+        if self._settings.library_root is not None:
+            summary.append(f"库目录：{self._settings.library_root}")
+        self._library_summary_var.set(" | ".join(summary))
+
+    def _translate_enabled_action(self) -> None:
+        self._settings = self._collect_settings_from_form()
+        if not self._settings.ai_enabled or not self._settings.translation_enabled:
+            messagebox.showwarning("AI 未启用", "请先在设置页启用 AI 和汉化功能。")
+            return
+
+        enabled_mods = self._enabled_records()
+        if not enabled_mods:
+            messagebox.showinfo("没有启用项", "请先启用至少一个 Mod。")
+            return
+
+        dialog = AIOptionsDialog(
+            self.root,
+            len(enabled_mods),
+            self._settings.ai_provider,
+            self._settings.openai_model,
+            bool(self._settings.openai_api_key.strip()),
+        )
+        mode = dialog.show()
+        if mode is None:
+            return
+
+        self._persist_state()
+        self._start_worker("汉化处理中...", lambda: self._translate_worker(enabled_mods, mode))
+
+    def _translate_worker(self, records: list[ManagedMod], mode: str) -> None:
+        total = len(records)
+        success = 0
+        skipped = 0
+        failed = 0
+
+        ordered = sorted(records, key=lambda item: item.display_name.lower())
+        for index, record in enumerate(ordered, start=1):
+            display_name = record.display_name or record.source_path.name
+            try:
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：扫描中"))
+                analysis = record.analysis or scan_mod(record.source_path)
+                self._apply_analysis_to_record(record, analysis)
+
+                if mode != "force" and analysis.has_chinese and analysis.translation_status == "translated":
+                    skipped += 1
+                    self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：已汉化，跳过"))
+                    continue
+
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：调用 AI 生成中"))
+                result = translate_with_openai(
+                    analysis,
+                    api_key=self._settings.openai_api_key or None,
+                    model=self._settings.openai_model or None,
+                    base_url=self._settings.openai_base_url or None,
+                )
+                written = write_json_file(result.output_path, result.payload, source_payload=self._build_validation_source(analysis))
+                refreshed = scan_mod(record.source_path)
+                self._apply_analysis_to_record(record, refreshed)
+                self._persist_state()
+                success += 1
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：已写入 {written}"))
+                self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"已完成 {index}/{total}"))
+            except Exception as exc:
+                failed += 1
+                self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：失败 -> {exc}"))
+
+        summary = f"汉化完成：成功 {success}，跳过 {skipped}，失败 {failed}。"
+        self._queue.put(WorkerEvent(kind="summary", summary=summary, message=summary))
+        self._queue.put(WorkerEvent(kind="log", message=summary))
+
+    def _build_validation_source(self, analysis: ModAnalysis):
+        if not analysis.translatable_sources:
+            return None
+        if len(analysis.translatable_sources) == 1 and analysis.default_layout == "flat":
+            return self._load_json(analysis.translatable_sources[0])
+        if analysis.default_layout == "tree" and analysis.default_locale_root is not None:
+            payload: dict[str, object] = {}
+            for path in analysis.translatable_sources:
+                payload[path.relative_to(analysis.default_locale_root).as_posix()] = self._load_json(path)
+            return payload
+        payload: dict[str, object] = {}
+        for path in analysis.translatable_sources:
+            payload[path.name] = self._load_json(path)
+        return payload
+
+    def _load_json(self, path: Path):
+        import json
+
+        with path.open("r", encoding="utf-8-sig") as handle:
+            return json.load(handle)
+
+    def _apply_analysis_to_record(self, record: ManagedMod, analysis: ModAnalysis) -> None:
+        record.display_name = analysis.mod_name
+        record.author = analysis.manifest.author if analysis.manifest is not None else None
+        record.version = analysis.manifest.version if analysis.manifest is not None else None
+        record.unique_id = analysis.manifest.unique_id if analysis.manifest is not None else None
+        record.mod_type = analysis.mod_type
+        record.translation_status = analysis.translation_status
+        record.has_chinese = analysis.has_chinese
+        record.missing_keys_count = analysis.missing_keys_count
+        record.has_manifest = analysis.has_manifest
+        record.manifest_path = analysis.manifest_path
+        record.last_scanned = datetime.now().isoformat(timespec="seconds")
+        record.warnings = list(analysis.warnings)
+        record.analysis = analysis
 
     def _sync_button_states(self) -> None:
-        has_selection = self._mods_tree.selection() != ()
+        has_selection = self._selected_record() is not None
         has_library = self._parse_path(self._library_root_var.get()) is not None
-        has_ai_target = self._parse_path(self._ai_folder_var.get()) is not None
-        ai_ready = self._ai_enabled_var.get() and self._translation_enabled_var.get() and has_ai_target
-        import_ready = resolve_game_mods_root(self._collect_settings_from_form()) is not None and any(
-            record.enabled for record in self._mods_by_path.values()
-        )
+        enabled_records = self._enabled_records()
+        has_enabled = bool(enabled_records)
+        ai_ready = self._ai_enabled_var.get() and self._translation_enabled_var.get() and has_enabled
 
         action_state = "disabled" if self._worker_running else "normal"
-        record_state = "disabled" if self._worker_running or not has_selection else "normal"
+        selected_state = "disabled" if self._worker_running or not has_selection else "normal"
 
-        self._rescan_button.configure(state=action_state if has_library else "disabled")
-        self._import_button.configure(state=action_state if import_ready else "disabled")
-        self._enable_button.configure(state=record_state)
-        self._disable_button.configure(state=record_state)
-        self._toggle_button.configure(state=record_state)
-        self._apply_metadata_button.configure(state=record_state)
-        self._ai_scan_button.configure(state=action_state if has_ai_target else "disabled")
-        self._ai_generate_button.configure(state=action_state if ai_ready else "disabled")
+        self._scan_button.configure(state=action_state if has_library else "disabled")
+        self._import_enabled_button.configure(state=action_state if has_enabled else "disabled")
+        self._translate_button.configure(state=action_state if ai_ready else "disabled")
+        self._enable_button.configure(state=selected_state)
+        self._disable_button.configure(state=selected_state)
+        self._save_meta_button.configure(state=selected_state)
         self._save_settings_button.configure(state=action_state)
+
+    def _start_worker(self, status: str, action: Callable[[], None]) -> None:
+        if self._worker_running:
+            self._append_log("已有任务正在运行。")
+            return
+        self._worker_running = True
+        self._status_var.set(status)
+        self._sync_button_states()
+        threading.Thread(target=action, daemon=True).start()
+
+    def _poll_queue(self) -> None:
+        processed = False
+        while True:
+            try:
+                event = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            processed = True
+            self._handle_event(event)
+        if processed:
+            self.root.update_idletasks()
+        self.root.after(100, self._poll_queue)
+
+    def _handle_event(self, event: WorkerEvent) -> None:
+        if event.kind == "log":
+            self._append_log(event.message)
+            self._status_var.set(event.message)
+        elif event.kind == "progress":
+            total = event.total or 0
+            progress = event.progress or 0
+            if total > 0:
+                percent = int((progress / total) * 100)
+                self._progress_bar.configure(maximum=total)
+                self._progress_bar["value"] = progress
+                self._progress_var.set(f"{percent}%")
+            if event.message:
+                self._status_var.set(event.message)
+        elif event.kind == "summary":
+            if event.summary:
+                self._summary_var.set(event.summary)
+                self._append_log(event.summary)
+        elif event.kind == "library_scan":
+            self._refresh_library_from_event(event.mods)
+            self._append_log(event.message)
+            self._status_var.set(event.message)
+        elif event.kind == "error":
+            self._append_log(event.message)
+            self._status_var.set(event.message)
+        elif event.kind == "done":
+            self._worker_running = False
+            self._sync_button_states()
+            self._progress_bar["value"] = 0
+            self._progress_var.set("0%")
+            if self._status_var.get() in {"扫描 Mod 库中...", "汉化处理中...", "导入启用的 Mod 中..."}:
+                self._status_var.set("Idle")
 
     def _append_log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")

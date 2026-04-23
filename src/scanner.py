@@ -37,6 +37,7 @@ def _scan_locale_layout(i18n_dir: Path, warnings: list[str]) -> tuple[
 ]:
     default_flat = i18n_dir / "default.json"
     zh_flat = i18n_dir / "zh.json"
+    zh_generated_flat = i18n_dir / "zh.generated.json"
     default_tree = i18n_dir / "default"
     zh_tree = i18n_dir / "zh"
 
@@ -69,6 +70,11 @@ def _scan_locale_layout(i18n_dir: Path, warnings: list[str]) -> tuple[
         zh_layout = "flat"
         zh_root = i18n_dir
         zh_primary = zh_flat
+        has_chinese = True
+    elif zh_generated_flat.exists() and zh_generated_flat.is_file():
+        zh_layout = "flat"
+        zh_root = i18n_dir
+        zh_primary = zh_generated_flat
         has_chinese = True
     elif _is_tree_locale(zh_tree):
         zh_files = _discover_json_files(zh_tree)

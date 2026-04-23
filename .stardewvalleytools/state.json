@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "settings": {
+    "library_root": "D:\\project\\PythonProjects\\StardewValleyTools\\mod参考",
+    "game_root": null,
+    "game_mods_root": null,
+    "ai_enabled": true,
+    "ai_provider": "openai",
+    "openai_api_key": "",
+    "openai_model": "gpt-4o-mini",
+    "openai_base_url": "",
+    "translation_enabled": true,
+    "import_policy": "overwrite"
+  },
+  "mods": [
+    {
+      "source_path": "D:\\project\\PythonProjects\\StardewValleyTools\\mod参考\\DwarvenNetwork",
+      "enabled": false,
+      "display_name": "Dwarven Network",
+      "author": "Orneryy",
+      "version": "0.8.0",
+      "unique_id": "Orneryy.DwarvenNetwork",
+      "mod_type": "smapi",
+      "translation_status": "unknown",
+      "has_chinese": false,
+      "missing_keys_count": 0,
+      "has_manifest": true,
+      "manifest_path": "D:\\project\\PythonProjects\\StardewValleyTools\\mod参考\\DwarvenNetwork\\manifest.json",
+      "tags": [],
+      "notes": "",
+      "last_scanned": "2026-04-23T11:43:51",
+      "warnings": []
+    },
+    {
+      "source_path": "D:\\project\\PythonProjects\\StardewValleyTools\\mod参考\\[CP] Dwarven Network Assets",
+      "enabled": false,
+      "display_name": "Dwarven Network Assets",
+      "author": "Orneryy",
+      "version": "0.8.0",
+      "unique_id": "Orneryy.DwarvenNetwork.Assets",
+      "mod_type": "content_pack",
+      "translation_status": "not_translated",
+      "has_chinese": false,
+      "missing_keys_count": 0,
+      "has_manifest": true,
+      "manifest_path": "D:\\project\\PythonProjects\\StardewValleyTools\\mod参考\\[CP] Dwarven Network Assets\\manifest.json",
+      "tags": [],
+      "notes": "",
+      "last_scanned": "2026-04-23T11:43:51",
+      "warnings": []
+    }
+  ]
+}

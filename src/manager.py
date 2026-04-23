@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from shutil import copytree
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .models import AppSettings, ImportReport, ManagedMod, ModAnalysis
 from .scanner import scan_mod
@@ -78,13 +78,17 @@ def deploy_enabled_mods(
     mods: Iterable[ManagedMod],
     game_mods_root: Path,
     policy: str = "overwrite",
+    progress_callback: Callable[[int, int, ManagedMod, str], None] | None = None,
 ) -> ImportReport:
     report = ImportReport(game_mods_root=game_mods_root, policy=policy)
     game_mods_root.mkdir(parents=True, exist_ok=True)
 
-    for record in mods:
-        if not record.enabled:
-            continue
+    enabled_mods = [record for record in mods if record.enabled]
+    total = len(enabled_mods)
+
+    for index, record in enumerate(enabled_mods, start=1):
+        if progress_callback is not None:
+            progress_callback(index, total, record, "processing")
 
         source_path = record.source_path
         destination = game_mods_root / source_path.name
@@ -92,15 +96,23 @@ def deploy_enabled_mods(
         try:
             if source_path.resolve() == destination.resolve():
                 report.skipped.append(source_path)
+                if progress_callback is not None:
+                    progress_callback(index, total, record, "skipped")
                 continue
 
             if destination.exists() and policy == "skip":
                 report.skipped.append(source_path)
+                if progress_callback is not None:
+                    progress_callback(index, total, record, "skipped")
                 continue
 
             copytree(source_path, destination, dirs_exist_ok=destination.exists())
             report.copied.append(source_path)
+            if progress_callback is not None:
+                progress_callback(index, total, record, "copied")
         except Exception as exc:
             report.failed.append((source_path, str(exc)))
+            if progress_callback is not None:
+                progress_callback(index, total, record, "failed")
 
     return report

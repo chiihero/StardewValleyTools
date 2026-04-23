@@ -113,3 +113,6 @@ class WorkerEvent:
     result: TranslationResult | None = None
     mods: list[ManagedMod] = field(default_factory=list)
     import_report: ImportReport | None = None
+    progress: int | None = None
+    total: int | None = None
+    summary: str = ""

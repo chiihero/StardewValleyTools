@@ -13,7 +13,7 @@
 ## 当前实现结构
 
 - `app.py`：程序入口。
-- `src/ui.py`：tkinter 界面、三页签（管理 / AI / 设置）、日志与状态管理。
+- `src/ui.py`：tkinter 界面、管理页 / 设置页、日志与状态管理。
 - `src/manager.py`：Mod 库扫描与导入执行。
 - `src/storage.py`：本地状态文件读写。
 - `src/scanner.py`：扫描 Mod 目录、解析 manifest、定位 locale 文件。
@@ -39,7 +39,7 @@
 
 ### 4. AI 汉化
 
-在后台线程调用 OpenAI，仅处理 JSON 文本资源，并要求返回合法 JSON。
+在后台线程调用 OpenAI，仅对已启用的 Mod 批量处理 JSON 文本资源，并要求返回合法 JSON。
 
 ### 5. 写入
 

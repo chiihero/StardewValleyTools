@@ -11,9 +11,9 @@ python app.py
 ## Workflow
 
 1. Set the mod library path and game path in Settings.
-2. Scan the library and mark mods as enabled / disabled.
-3. Import enabled mods into the game `Mods` folder.
-4. Optionally scan a mod folder and generate `i18n/zh.generated.json` with AI.
+2. Scan the library and toggle enabled / disabled directly from the Mod list.
+3. Use the bottom action buttons to import enabled mods or run batch AI translation.
+4. AI translation writes a safe `i18n/zh.generated.json` file and logs progress.
 
 ## Notes
 
