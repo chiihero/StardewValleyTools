@@ -759,11 +759,13 @@ class ModManagerApp:
         """选中列表中的所有 Mod。"""
         self._mods_tree.selection_set(self._mods_tree.get_children())
         self._update_selection_summary()
+        self._sync_button_states()
 
     def _clear_selection(self) -> None:
         """清空当前列表选择。"""
         self._mods_tree.selection_remove(self._mods_tree.selection())
         self._update_selection_summary()
+        self._sync_button_states()
 
     def _invert_selection(self) -> None:
         """把当前选择与未选择项互换。"""
@@ -771,6 +773,7 @@ class ModManagerApp:
         all_items = list(self._mods_tree.get_children())
         self._mods_tree.selection_set([item for item in all_items if item not in current])
         self._update_selection_summary()
+        self._sync_button_states()
 
     def _on_tree_click(self, event) -> str | None:
         """点击启用列时直接切换 Mod 的启用状态。"""
@@ -796,6 +799,7 @@ class ModManagerApp:
         """在列表选择变化时同步详情面板内容。"""
         selection = self._mods_tree.selection()
         self._update_selection_summary()
+        self._sync_button_states()
         if not selection:
             self._current_selected_path = None
             self._clear_record_details()

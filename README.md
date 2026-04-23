@@ -18,6 +18,7 @@ python app.py
 ## Notes
 
 - Enabled / disabled is stored as manager metadata only.
+- 切换 Mod 选择后，相关操作按钮会立即跟随当前选择状态刷新，不需要额外点一次“重新扫描”。
 - Import only copies enabled mods; it does not delete other mods in the game folder.
 - AI translation defaults to OpenAI, uses `gpt-5.4-nano`, and the `Base URL` field defaults to `https://api.openai.com/v1`.
 - You can still change `Base URL` to a proxy endpoint when needed.
