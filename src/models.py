@@ -22,6 +22,7 @@ class NexusUpdateInfo:
     latest_version: str | None = None
     file_name: str | None = None
     download_url: str | None = None
+    manual_download_url: str | None = None
     update_url: str | None = None
     checked_at: str | None = None
     message: str = ""
@@ -125,6 +126,7 @@ class ManagedMod:
     missing_keys_count: int = 0
     has_manifest: bool = False
     manifest_path: Path | None = None
+    update_keys: list[str] = field(default_factory=list)
     nexus_mod_id: int | None = None
     nexus_file_id: int | None = None
     nexus_update_status: UpdateStatus = "unknown"
@@ -132,6 +134,7 @@ class ManagedMod:
     nexus_latest_version: str | None = None
     nexus_file_name: str | None = None
     nexus_update_url: str | None = None
+    nexus_manual_download_url: str | None = None
     nexus_download_url: str | None = None
     nexus_last_checked: str | None = None
     nexus_message: str = ""

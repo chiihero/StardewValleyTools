@@ -142,6 +142,14 @@ def _select_download_link(links: Any) -> str | None:
     return None
 
 
+def build_manual_download_url(mod_id: int, file_id: int | None = None) -> str:
+    """生成 Nexus Mods 的网页手动下载地址。"""
+    base_url = f"https://www.nexusmods.com/{NEXUS_GAME_DOMAIN}/mods/{mod_id}"
+    if file_id is None:
+        return base_url
+    return f"{base_url}?tab=files&file_id={file_id}"
+
+
 class NexusService:
     """封装 Nexus Mods 的更新查询、下载与安装流程。"""
 
@@ -250,9 +258,9 @@ class NexusService:
             if flagged:
                 candidates = flagged
 
-        primary = [item for item in candidates if item.is_primary]
-        if primary:
-            candidates = primary
+        # primary = [item for item in candidates if item.is_primary]
+        # if primary:
+        #     candidates = primary
 
         main_files = [item for item in candidates if (item.category_name or "").strip().upper() == "MAIN"]
         if main_files:
@@ -315,6 +323,11 @@ class NexusService:
             except NexusError:
                 download_url = None
 
+        manual_download_url = build_manual_download_url(
+            source.mod_id,
+            selected_file.file_id if selected_file is not None else source.file_id,
+        )
+
         status: UpdateStatus = "unknown"
         message = ""
         if local_version is None:
@@ -328,6 +341,9 @@ class NexusService:
             status = "up_to_date"
             message = f"已是最新版本：{remote_version}"
 
+        if status == "outdated" and download_url is None and manual_download_url:
+            message = f"{message}；需要通过网页手动下载：{manual_download_url}" if message else f"需要通过网页手动下载：{manual_download_url}"
+
         return NexusUpdateInfo(
             status=status,
             mod_id=source.mod_id,
@@ -336,6 +352,7 @@ class NexusService:
             latest_version=remote_version,
             file_name=file_name,
             download_url=download_url,
+            manual_download_url=manual_download_url,
             update_url=f"https://www.nexusmods.com/stardewvalley/mods/{source.mod_id}",
             checked_at=checked_at,
             message=message,
@@ -344,6 +361,8 @@ class NexusService:
     def download_update(self, info: NexusUpdateInfo) -> Path:
         """把 Nexus 更新文件下载到临时目录。"""
         if not info.download_url:
+            if info.manual_download_url:
+                raise NexusError(f"缺少可直接下载的 Nexus 链接，请通过网页手动下载：{info.manual_download_url}")
             raise NexusError("缺少可下载的 Nexus 链接。")
 
         url_name = Path(urlparse(info.download_url).path).name

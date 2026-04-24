@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL, AppSettings, ManagedMod
+from .nexus import build_manual_download_url
 
 STATE_DIR_NAME = ".stardewvalleytools"
 STATE_FILE_NAME = "state.json"
@@ -32,6 +33,17 @@ def _load_path(value: Any) -> Path | None:
     if not value:
         return None
     return Path(str(value)).expanduser()
+
+
+def _load_update_keys(value: Any) -> list[str]:
+    """把持久化数据里的 UpdateKeys 恢复成去空白后的字符串列表。"""
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    return [str(item).strip() for item in items if str(item).strip()]
 
 
 def serialize_settings(settings: AppSettings) -> dict[str, Any]:
@@ -68,6 +80,10 @@ def deserialize_settings(raw: dict[str, Any]) -> AppSettings:
 
 def serialize_mod(record: ManagedMod) -> dict[str, Any]:
     """把单个 Mod 记录转成可序列化字典。"""
+    manual_download_url = record.nexus_manual_download_url
+    if manual_download_url is None and record.nexus_mod_id is not None:
+        manual_download_url = build_manual_download_url(record.nexus_mod_id, record.nexus_file_id)
+
     return {
         "source_path": str(record.source_path),
         "checked": record.checked,
@@ -82,6 +98,8 @@ def serialize_mod(record: ManagedMod) -> dict[str, Any]:
         "missing_keys_count": record.missing_keys_count,
         "has_manifest": record.has_manifest,
         "manifest_path": _path_value(record.manifest_path),
+        # UpdateKeys 既是 manifest 里的权威来源，也是界面需要直接恢复的本地缓存。
+        "update_keys": list(record.update_keys),
         "nexus_mod_id": record.nexus_mod_id,
         "nexus_file_id": record.nexus_file_id,
         "nexus_update_status": record.nexus_update_status,
@@ -89,6 +107,7 @@ def serialize_mod(record: ManagedMod) -> dict[str, Any]:
         "nexus_latest_version": record.nexus_latest_version,
         "nexus_file_name": record.nexus_file_name,
         "nexus_update_url": record.nexus_update_url,
+        "nexus_manual_download_url": manual_download_url,
         "nexus_download_url": record.nexus_download_url,
         "nexus_last_checked": record.nexus_last_checked,
         "nexus_message": record.nexus_message,
@@ -101,6 +120,15 @@ def serialize_mod(record: ManagedMod) -> dict[str, Any]:
 
 def deserialize_mod(raw: dict[str, Any]) -> ManagedMod:
     """从持久化字典恢复单个 Mod 记录。"""
+    nexus_mod_id = int(raw.get("nexus_mod_id")) if str(raw.get("nexus_mod_id") or "").strip() else None
+    nexus_file_id = int(raw.get("nexus_file_id")) if str(raw.get("nexus_file_id") or "").strip() else None
+    # 旧状态文件只保存过直链或根本没有这个字段；这里先兼容读取，再按已知 ID 回填网页手动下载页。
+    manual_download_url = raw.get("nexus_manual_download_url")
+    if manual_download_url is None:
+        manual_download_url = raw.get("manual_download_url")
+    if manual_download_url is None and nexus_mod_id is not None:
+        manual_download_url = build_manual_download_url(nexus_mod_id, nexus_file_id)
+
     return ManagedMod(
         source_path=Path(str(raw.get("source_path") or "")).expanduser(),
         checked=bool(raw.get("checked", False)),
@@ -115,13 +143,15 @@ def deserialize_mod(raw: dict[str, Any]) -> ManagedMod:
         missing_keys_count=int(raw.get("missing_keys_count", 0)),
         has_manifest=bool(raw.get("has_manifest", False)),
         manifest_path=_load_path(raw.get("manifest_path")),
-        nexus_mod_id=int(raw.get("nexus_mod_id")) if str(raw.get("nexus_mod_id") or "").strip() else None,
-        nexus_file_id=int(raw.get("nexus_file_id")) if str(raw.get("nexus_file_id") or "").strip() else None,
+        update_keys=_load_update_keys(raw.get("update_keys", [])),
+        nexus_mod_id=nexus_mod_id,
+        nexus_file_id=nexus_file_id,
         nexus_update_status=str(raw.get("nexus_update_status") or "unknown"),
         nexus_current_version=raw.get("nexus_current_version") if raw.get("nexus_current_version") is not None else None,
         nexus_latest_version=raw.get("nexus_latest_version") if raw.get("nexus_latest_version") is not None else None,
         nexus_file_name=raw.get("nexus_file_name") if raw.get("nexus_file_name") is not None else None,
         nexus_update_url=raw.get("nexus_update_url") if raw.get("nexus_update_url") is not None else None,
+        nexus_manual_download_url=manual_download_url,
         nexus_download_url=raw.get("nexus_download_url") if raw.get("nexus_download_url") is not None else None,
         nexus_last_checked=raw.get("nexus_last_checked") if raw.get("nexus_last_checked") is not None else None,
         nexus_message=str(raw.get("nexus_message") or ""),

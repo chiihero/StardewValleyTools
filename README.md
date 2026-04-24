@@ -19,6 +19,9 @@ python app.py
 
 - Enabled / disabled is stored as manager metadata only.
 - Nexus update checks rely on the Nexus API Key saved in Settings and on each mod's Nexus update keys in `manifest.json`.
+- UpdateKeys 会一并写入本地状态文件，因此保存一次后，重启应用也能直接显示，不必先重新扫描。
+- 当 Nexus 返回的更新记录没有 `download_url` 时，程序会自动生成 `manual_download_url`，提示你到 Nexus 网页手动下载；如果已经有 `file_id`，会直接拼出对应文件页链接。
+- 右侧详情现在显示并编辑单个更新 ID；空值会显示为空白，点击保存后会写回当前 Mod 的 `manifest.json`，若字段不存在会自动创建。
 - Nexus update archives are extracted locally; 7z packages require the `py7zr` dependency.
 - The Nexus API Key field includes a button that opens the Nexus SSO page and auto-fills the key after authorization.
 - 切换 Mod 选择后，相关操作按钮会立即跟随当前选择状态刷新，不需要额外点一次“重新扫描”。

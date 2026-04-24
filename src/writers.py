@@ -56,3 +56,42 @@ def write_json_file(path: Path, payload: Any, source_payload: Any | None = None)
             temp_path.unlink()
         raise
     return path
+
+
+def write_manifest_update_keys(path: Path, update_keys: list[str], expected_root: Path | None = None) -> Path:
+    """把 manifest.json 里的 UpdateKeys 原子写回磁盘。"""
+    if path.exists() and path.is_dir():
+        raise ValueError(f"output path is a directory: {path}")
+
+    if expected_root is not None:
+        resolved_path = path.expanduser().resolve()
+        resolved_root = expected_root.expanduser().resolve()
+        if resolved_path.name.lower() != "manifest.json":
+            raise ValueError("manifest path must point to manifest.json")
+        if resolved_path.parent != resolved_root:
+            raise ValueError("manifest path is outside the selected mod root")
+
+    with path.open("r", encoding="utf-8-sig") as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, dict):
+        raise ValueError("manifest.json must contain a JSON object")
+
+    if update_keys:
+        payload["UpdateKeys"] = list(update_keys)
+    else:
+        payload.pop("UpdateKeys", None)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=path.stem + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(normalize_json_text(payload))
+        temp_path = Path(temp_name)
+        temp_path.replace(path)
+    except Exception:
+        temp_path = Path(temp_name)
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+    return path

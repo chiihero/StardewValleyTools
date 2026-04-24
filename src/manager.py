@@ -48,6 +48,7 @@ def _build_record(analysis: ModAnalysis, existing: ManagedMod | None) -> Managed
         missing_keys_count=analysis.missing_keys_count,
         has_manifest=analysis.has_manifest,
         manifest_path=analysis.manifest_path,
+        update_keys=list(manifest.update_keys) if manifest is not None else [],
         nexus_mod_id=existing.nexus_mod_id if existing is not None else None,
         nexus_file_id=existing.nexus_file_id if existing is not None else None,
         nexus_update_status=existing.nexus_update_status if existing is not None and version_changed is False else "unknown",

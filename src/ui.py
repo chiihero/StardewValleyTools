@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import queue
+import re
 import shutil
 import threading
 import time
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -18,12 +20,12 @@ from .models import (
     ModAnalysis,
     WorkerEvent,
 )
-from .nexus import NexusService
+from .nexus import NexusService, extract_nexus_source
 from .nexus_auth import NexusAuthSession
 from .scanner import scan_mod
 from .storage import load_state, save_state
 from .translator import probe_openai_connection, translate_with_openai
-from .writers import write_json_file
+from .writers import write_json_file, write_manifest_update_keys
 
 IMPORT_POLICY_LABELS = {
     "overwrite": "覆盖",
@@ -80,6 +82,73 @@ def _localized_mod_type(value: str) -> str:
 def _localized_nexus_status(value: str) -> str:
     """把 Nexus 更新状态转换成中文显示文本。"""
     return NEXUS_UPDATE_STATUS_LABELS.get(value, value)
+
+
+def _format_update_keys(values: list[str]) -> str:
+    """把 UpdateKeys 列表格式化成单行显示文本。"""
+    return ", ".join(values)
+
+
+def _parse_update_keys(text: str) -> list[str]:
+    """把用户输入拆分成去重后的 UpdateKeys 列表。"""
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[;,\n]+", text):
+        value = part.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _format_empty_update_keys(values: list[str]) -> str:
+    """把 UpdateKeys 解析成可直接显示的数字 ID。"""
+    source = extract_nexus_source(values)
+    return str(source.mod_id) if source is not None else ""
+
+
+def _parse_update_key(text: str) -> str | None:
+    """把用户输入解析成可写回 manifest 的数字 ID。"""
+    value = text.strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return value
+    source = extract_nexus_source([value])
+    return str(source.mod_id) if source is not None else None
+
+
+_LOG_URL_PATTERN = re.compile(r"https?://[^\s]+")
+_LOG_URL_TRAILING_CHARS = ".,;:!?)]}）】"
+
+
+def _split_log_message(message: str) -> list[tuple[str, str | None]]:
+    """把日志消息拆成普通文本和可点击 URL 片段。"""
+    segments: list[tuple[str, str | None]] = []
+    cursor = 0
+
+    for match in _LOG_URL_PATTERN.finditer(message):
+        start, end = match.span()
+        if start > cursor:
+            segments.append((message[cursor:start], None))
+
+        url = match.group(0)
+        suffix = ""
+        while url and url[-1] in _LOG_URL_TRAILING_CHARS:
+            suffix = url[-1] + suffix
+            url = url[:-1]
+
+        if url:
+            segments.append((url, url))
+        if suffix:
+            segments.append((suffix, None))
+        cursor = end
+
+    if cursor < len(message):
+        segments.append((message[cursor:], None))
+
+    return segments
 
 
 class AIOptionsDialog:
@@ -163,11 +232,13 @@ class ModManagerApp:
         self._ai_enabled_var = BooleanVar(value=True)
         self._translation_enabled_var = BooleanVar(value=True)
         self._tags_var = StringVar(value="")
+        self._update_keys_var = StringVar(value="")
         self._library_summary_var = StringVar(value="")
         self._status_var = StringVar(value="Idle")
         self._progress_var = StringVar(value="0%")
         self._summary_var = StringVar(value="")
         self._selected_count_var = StringVar(value="已选中 0 个 | 已勾选 0 个")
+        self._log_link_counter = 0
 
         self._sort_column = "display_name"
         self._sort_reverse = False
@@ -263,6 +334,7 @@ class ModManagerApp:
             "display_name",
             "mod_type",
             "version",
+            "update_keys",
             "nexus_latest_version",
             "nexus_update_status",
             "author",
@@ -276,6 +348,7 @@ class ModManagerApp:
             "display_name": "名称",
             "mod_type": "类型",
             "version": "版本",
+            "update_keys": "更新 ID",
             "nexus_latest_version": "远端版本",
             "nexus_update_status": "更新状态",
             "author": "作者",
@@ -288,6 +361,7 @@ class ModManagerApp:
             "display_name": 180,
             "mod_type": 100,
             "version": 90,
+            "update_keys": 180,
             "nexus_latest_version": 90,
             "nexus_update_status": 90,
             "author": 150,
@@ -353,6 +427,15 @@ class ModManagerApp:
         self._detail_text = Text(detail_box, height=16, wrap="word", borderwidth=0, background="#fffdf8", foreground="#2f2922")
         self._detail_text.pack(fill=BOTH, expand=True, padx=8, pady=(8, 4))
         self._detail_text.configure(state="disabled")
+
+        update_box = ttk.LabelFrame(right, text="Nexus 更新")
+        update_box.pack(fill=X, expand=False, pady=(10, 0))
+        update_row = ttk.Frame(update_box)
+        update_row.pack(fill=X, padx=8, pady=(8, 4))
+        ttk.Label(update_row, text="更新 ID").pack(side=LEFT)
+        ttk.Entry(update_row, textvariable=self._update_keys_var).pack(side=LEFT, fill=X, expand=True, padx=(8, 8))
+        self._save_update_keys_button = ttk.Button(update_row, text="保存到 manifest", command=self._save_selected_update_keys)
+        self._save_update_keys_button.pack(side=LEFT)
 
         meta_box = ttk.LabelFrame(right, text="标签 / 备注")
         meta_box.pack(fill=BOTH, expand=False, pady=(10, 0))
@@ -707,7 +790,13 @@ class ModManagerApp:
             messagebox.showinfo("没有可更新的 Mod", "请先勾选或选中一个 Mod。")
             return
 
-        outdated = [record for record in target_mods if record.nexus_update_status == "outdated" or record.nexus_download_url]
+        outdated = [
+            record
+            for record in target_mods
+            if record.nexus_update_status == "outdated"
+            or record.nexus_download_url
+            or record.nexus_manual_download_url
+        ]
         if not outdated:
             messagebox.showinfo("没有可下载的更新", "请先检查 Nexus 更新，确认存在可下载的 Mod。")
             return
@@ -902,6 +991,7 @@ class ModManagerApp:
         record.missing_keys_count = analysis.missing_keys_count
         record.has_manifest = analysis.has_manifest
         record.manifest_path = analysis.manifest_path
+        record.update_keys = list(analysis.manifest.update_keys) if analysis.manifest is not None else []
         record.last_scanned = datetime.now().isoformat(timespec="seconds")
         record.warnings = list(analysis.warnings)
         record.analysis = analysis
@@ -926,6 +1016,7 @@ class ModManagerApp:
                     record.display_name or record.source_path.name,
                     _localized_mod_type(record.mod_type),
                     record.version or "",
+                    _format_empty_update_keys(record.update_keys),
                     record.nexus_latest_version or "",
                     _localized_nexus_status(record.nexus_update_status),
                     record.author or "",
@@ -960,6 +1051,7 @@ class ModManagerApp:
                 _localized_mod_type(record.mod_type),
                 record.translation_status,
                 _localized_translation_status(record.translation_status),
+                _format_empty_update_keys(record.update_keys),
                 record.nexus_update_status,
                 _localized_nexus_status(record.nexus_update_status),
                 record.nexus_latest_version or "",
@@ -981,6 +1073,7 @@ class ModManagerApp:
             "display_name": record.display_name.lower(),
             "mod_type": record.mod_type,
             "version": record.version or "",
+            "update_keys": _format_empty_update_keys(record.update_keys),
             "nexus_latest_version": record.nexus_latest_version or "",
             "nexus_update_status": record.nexus_update_status,
             "author": record.author or "",
@@ -1113,7 +1206,7 @@ class ModManagerApp:
         """保存当前选中 Mod 的标签和备注。"""
         record = self._selected_record()
         if record is None:
-            messagebox.showinfo("未选择 Mod", "请先选择一个 Mod。")
+            messagebox.showinfo("未选中 Mod", "请先选择一个 Mod。")
             return
 
         tags = [item.strip() for item in self._tags_var.get().replace("；", ";").split(";") if item.strip()]
@@ -1125,12 +1218,67 @@ class ModManagerApp:
         self._refresh_mod_tree()
         self._append_log(f"已保存元数据：{record.display_name or record.source_path.name}")
 
+    def _save_selected_update_keys(self) -> None:
+        """把右侧输入框里的 UpdateKeys 写回当前 Mod 的 manifest.json。"""
+        record = self._selected_record()
+        if record is None:
+            messagebox.showinfo("未选中 Mod", "请先选择一个 Mod。")
+            return
+
+        manifest_path = self._resolve_manifest_write_target(record)
+        if manifest_path is None:
+            return
+
+        update_key = _parse_update_key(self._update_keys_var.get())
+        if self._update_keys_var.get().strip() and update_key is None:
+            messagebox.showwarning("无效的更新 ID", "请输入可识别的 Nexus 更新 ID，例如 nexus:12345。")
+            return
+
+        update_keys = [f"nexus:{update_key}"] if update_key is not None else []
+        try:
+            write_manifest_update_keys(manifest_path, update_keys, expected_root=record.source_path)
+        except Exception as exc:
+            messagebox.showerror("保存 UpdateKeys 失败", "无法写回当前 Mod 的 manifest.json。")
+            return
+
+        record.update_keys = update_keys
+        if record.analysis is not None and record.analysis.manifest is not None:
+            record.analysis.manifest.update_keys = list(update_keys)
+            record.analysis.manifest.raw["UpdateKeys"] = list(update_keys)
+            if not update_keys:
+                record.analysis.manifest.raw.pop("UpdateKeys", None)
+        self._persist_state()
+        self._refresh_mod_tree()
+        self._show_record_details(record)
+        self._append_log(f"已保存更新 ID：{record.display_name or record.source_path.name}")
+
+    def _resolve_manifest_write_target(self, record: ManagedMod) -> Path | None:
+        """校验并返回当前 Mod 的 manifest.json 写回路径。"""
+        library_root = self._settings.library_root
+        if library_root is None:
+            messagebox.showwarning("Mod 库目录未设置", "请先在设置页配置 Mod 库目录。")
+            return None
+
+        resolved_library_root = library_root.expanduser().resolve()
+        resolved_mod_root = record.source_path.expanduser().resolve()
+        if not resolved_mod_root.is_relative_to(resolved_library_root):
+            messagebox.showwarning("路径无效", "当前 Mod 不在已配置的 Mod 库目录内。")
+            return None
+
+        manifest_path = resolved_mod_root / "manifest.json"
+        if not manifest_path.is_file():
+            messagebox.showwarning("manifest.json 不存在", "找不到当前 Mod 的 manifest.json。")
+            return None
+
+        return manifest_path
+
     def _show_record_details(self, record: ManagedMod | None) -> None:
-        """把某个 Mod 的详情写入右侧面板。"""
+        """把当前 Mod 的详情渲染到右侧面板。"""
         if record is None:
             self._clear_record_details()
             return
         self._tags_var.set(", ".join(record.tags))
+        self._update_keys_var.set(_format_empty_update_keys(record.update_keys))
         self._notes_text.configure(state="normal")
         self._notes_text.delete("1.0", END)
         self._notes_text.insert("1.0", record.notes)
@@ -1138,15 +1286,16 @@ class ModManagerApp:
         self._set_text(self._detail_text, self._render_record_summary(record))
 
     def _clear_record_details(self) -> None:
-        """清空详情面板并恢复默认提示。"""
+        """清空右侧详情并恢复默认提示。"""
         self._tags_var.set("")
+        self._update_keys_var.set("")
         self._notes_text.configure(state="normal")
         self._notes_text.delete("1.0", END)
         self._notes_text.configure(state="normal")
         self._set_text(self._detail_text, "选择一个 Mod 查看详情。")
 
     def _render_record_summary(self, record: ManagedMod) -> str:
-        """把 Mod 记录格式化成可读的详情文本。"""
+        """把 Mod 记录格式化成可读的摘要文本。"""
         lines = [
             f"路径：{record.source_path}",
             f"已勾选：{_boolean_label(record.checked)}",
@@ -1156,15 +1305,17 @@ class ModManagerApp:
             f"版本：{record.version or '无'}",
             f"类型：{_localized_mod_type(record.mod_type)}",
             f"唯一 ID：{record.unique_id or '无'}",
-            f"汉化状态：{_localized_translation_status(record.translation_status)}",
+            f"UpdateKeys：{_format_empty_update_keys(record.update_keys)}",
+            f"翻译状态：{_localized_translation_status(record.translation_status)}",
             f"是否有中文：{_boolean_label(record.has_chinese)}",
             f"缺失键数：{record.missing_keys_count}",
             f"Nexus 更新状态：{_localized_nexus_status(record.nexus_update_status)}",
             f"Nexus 当前版本：{record.nexus_current_version or '无'}",
             f"Nexus 远端版本：{record.nexus_latest_version or '无'}",
             f"Nexus 文件名：{record.nexus_file_name or '无'}",
-            f"Nexus 最后检查：{record.nexus_last_checked or '无'}",
-            f"Nexus 提示：{record.nexus_message or '无'}",
+            f"Nexus 手动下载页：{record.nexus_manual_download_url or '无'}",
+            f"Nexus 检查时间：{record.nexus_last_checked or '无'}",
+            f"Nexus 消息：{record.nexus_message or '无'}",
             f"清单：{'已找到' if record.has_manifest else '缺失'}",
             f"清单路径：{record.manifest_path or '无'}",
             f"标签：{', '.join(record.tags) or '无'}",
@@ -1252,6 +1403,7 @@ class ModManagerApp:
         record.nexus_latest_version = info.latest_version
         record.nexus_file_name = info.file_name
         record.nexus_update_url = info.update_url
+        record.nexus_manual_download_url = info.manual_download_url
         record.nexus_download_url = info.download_url
         record.nexus_last_checked = info.checked_at
         record.nexus_message = info.message
@@ -1315,9 +1467,13 @@ class ModManagerApp:
                     self._apply_nexus_update_to_record(record, info)
 
                 effective_info = info or service.check_mod(record)
-                if effective_info.status != "outdated" or not effective_info.download_url:
+                # if effective_info.status != "outdated" or not effective_info.download_url:
+                if not effective_info.download_url:
                     skipped += 1
-                    record.nexus_message = effective_info.message or "没有可下载的更新。"
+                    record.nexus_message = (
+                        effective_info.message
+                        or (f"需要通过网页手动下载：{effective_info.manual_download_url}" if effective_info.manual_download_url else "没有可下载的更新。")
+                    )
                     self._persist_state()
                     self._queue.put(WorkerEvent(kind="log", message=f"[{index}/{total}] {display_name}：跳过（{record.nexus_message}）"))
                     self._queue.put(WorkerEvent(kind="progress", progress=index, total=total, message=f"[{index}/{total}] {display_name}：跳过"))
@@ -1333,6 +1489,7 @@ class ModManagerApp:
                     record.nexus_latest_version = effective_info.latest_version
                     record.nexus_file_name = effective_info.file_name
                     record.nexus_update_url = effective_info.update_url
+                    record.nexus_manual_download_url = effective_info.manual_download_url
                     record.nexus_download_url = effective_info.download_url
                     record.nexus_last_checked = datetime.now().isoformat(timespec="seconds")
                     record.nexus_message = install_result.message
@@ -1553,9 +1710,49 @@ class ModManagerApp:
         """把一条消息追加到日志窗口。"""
         timestamp = time.strftime("%H:%M:%S")
         self._log_text.configure(state="normal")
-        self._log_text.insert(END, f"[{timestamp}] {message}\n")
+        self._log_text.insert(END, f"[{timestamp}] ")
+        for chunk, url in _split_log_message(message):
+            if not chunk:
+                continue
+            if url is None:
+                self._log_text.insert(END, chunk)
+            else:
+                self._append_log_url(url)
+        self._log_text.insert(END, "\n")
         self._log_text.see(END)
         self._log_text.configure(state="disabled")
+
+    def _append_log_url(self, url: str) -> None:
+        """把日志里的 URL 渲染成可点击链接。"""
+        tag_name = f"log-link-{self._log_link_counter}"
+        self._log_link_counter += 1
+
+        start = self._log_text.index(END)
+        self._log_text.insert(END, url)
+        end = self._log_text.index(END)
+        self._log_text.tag_add(tag_name, start, end)
+        self._log_text.tag_configure(tag_name, foreground="#1a73e8", underline=True)
+
+        def _open_link(_event: object, target: str = url) -> str:
+            """点击日志链接时打开系统浏览器。"""
+            self._open_log_url(target)
+            return "break"
+
+        def _enter(_event: object) -> None:
+            """鼠标悬停时切换成链接指针。"""
+            self._log_text.configure(cursor="hand2")
+
+        def _leave(_event: object) -> None:
+            """鼠标离开时恢复默认指针。"""
+            self._log_text.configure(cursor="")
+
+        self._log_text.tag_bind(tag_name, "<Button-1>", _open_link)
+        self._log_text.tag_bind(tag_name, "<Enter>", _enter)
+        self._log_text.tag_bind(tag_name, "<Leave>", _leave)
+
+    def _open_log_url(self, url: str) -> None:
+        """用系统默认浏览器打开日志里的链接。"""
+        webbrowser.open(url)
 
     def _set_text(self, widget: Text, value: str) -> None:
         """把只读文本控件替换为新的内容。"""
